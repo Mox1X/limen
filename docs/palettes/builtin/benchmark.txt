@@ -1,0 +1,7 @@
+atlas: builtin
+brightness: 31016 triangles, 120x40 chars, 2x4 samples, total 7.896 ms/frame (raster 7.792, moving resolve 0.104), fixed resolve 0.094 ms/frame; changed characters=21234, excluding terminal I/O and statistics
+shape: 31016 triangles, 120x40 chars, 2x4 samples, total 8.168 ms/frame (raster 7.745, moving resolve 0.423), fixed resolve 0.359 ms/frame; changed characters=21060, excluding terminal I/O and statistics
+brightness-tonal: 31016 triangles, 120x40 chars, 2x4 samples, total 7.652 ms/frame (raster 7.548, moving resolve 0.103), fixed resolve 0.092 ms/frame; changed characters=21234, excluding terminal I/O and statistics
+hybrid-tonal: 31016 triangles, 120x40 chars, 2x4 samples, total 9.019 ms/frame (raster 7.808, moving resolve 1.211), fixed resolve 1.097 ms/frame; changed characters=19857, excluding terminal I/O and statistics
+hybrid-structural-unstable: 31016 triangles, 120x40 chars, 2x4 samples, total 9.280 ms/frame (raster 8.084, moving resolve 1.196), fixed resolve 1.106 ms/frame; changed characters=21001, excluding terminal I/O and statistics
+hybrid-structural: 31016 triangles, 120x40 chars, 2x4 samples, total 9.322 ms/frame (raster 8.080, moving resolve 1.242), fixed resolve 1.123 ms/frame; changed characters=19643, excluding terminal I/O and statistics

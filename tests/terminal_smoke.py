@@ -77,28 +77,42 @@ class Viewer:
         assert b"\x1b[?25h" in self.all_output, "cursor not restored"
 
 
+RAMP = b" .:-=+*#%@"
+STRUCTURAL = RAMP + b"/\\|_()[]<>"
+
 with Viewer() as viewer:
     initial = viewer.frames(0.3)
     assert b"A0.500(auto)" in initial[-1][-1]
+    assert b"hybrid/structural" in initial[-1][-1]
     assert any(row.strip() for row in initial[-1][:-1]), "no visible model"
+    assert all(c in STRUCTURAL for row in initial[-1][:-1] for c in row)
     viewer.send(b" ")
     viewer.collect()
     paused = viewer.frames()
     assert len(paused) >= 2 and paused[0] == paused[-1], "pause did not freeze"
-    viewer.send(b"m")
-    shape_paused = [frame for frame in viewer.frames() if b"shape" in frame[-1]]
-    assert len(shape_paused) >= 2, "no stable shape frames"
-    assert shape_paused[0][:-1] == shape_paused[-1][:-1], "shape matcher changed a paused frame"
-    viewer.send(b"M")
-    restored = viewer.last()
-    assert b"brightness" in restored[-1] and restored[:-1] == paused[-1][:-1]
+    for mode in [b"brightness", b"shape", b"hybrid"]:
+        viewer.send(b"m")
+        frames = [f for f in viewer.frames() if mode + b"/structural" in f[-1]]
+        assert len(frames) >= 2, mode
+        assert frames[0][:-1] == frames[-1][:-1], "paused matcher changed"
+    assert b"hybrid/structural" in viewer.last()[-1]
+    viewer.send(b"p")
+    tonal = viewer.last()
+    assert b"hybrid/tonal" in tonal[-1]
+    assert all(c in RAMP for row in tonal[:-1] for c in row)
+    viewer.send(b"P")
+    assert b"hybrid/structural" in viewer.last()[-1], "full must be skipped without font"
     for number, mode in enumerate(MODES, 1):
         viewer.send(str(number).encode())
-        assert viewer.last()[-1].startswith(mode + b" paused"), mode
-        viewer.send(b"m")
-        toggled = viewer.last()
-        assert toggled[-1].startswith(mode + b" paused")
-        assert (b"shape" if number % 2 else b"brightness") in toggled[-1]
+        frame = viewer.last()
+        assert frame[-1].startswith(mode + b" paused"), mode
+        if number > 1:
+            assert all(c in RAMP for row in frame[:-1] for c in row)
+            for algorithm in [b"brightness", b"shape", b"hybrid"]:
+                viewer.send(b"m")
+                toggled = viewer.last()
+                assert algorithm + b"/structural" in toggled[-1]
+                assert frame[:-1] == toggled[:-1], "algorithm changed diagnostic output"
     viewer.send(b"2")
     depth = viewer.last()
     viewer.send(b".[")
@@ -115,63 +129,73 @@ with Viewer() as viewer:
     viewer.send(b"0")
     reset = viewer.last()
     assert reset[-1].startswith(b"shaded paused z1.00 c1.20 g1.00 L-55/35")
+    assert b"hybrid/structural" in reset[-1]
     viewer.send(b"r")
-    reset_angle = viewer.last()
+    viewer.collect()
     viewer.send(b" ")
     resumed = viewer.frames(0.4)
     assert len(set(frame[:-1] for frame in resumed)) > 1, "animation did not resume"
-    viewer.send(b"m")
     viewer.resize(80, 24, 800, 600)
     resized = viewer.last()
-    assert b"shape" in resized[-1]
+    assert b"hybrid" in resized[-1]
     assert b"A0.400(auto)" in resized[-1], "resize aspect detection failed"
     viewer.resize(80, 24, 0, 0)
     assert b"A0.500(fallback)" in viewer.last()[-1]
     viewer.resize(80, 1, 800, 20)
     assert viewer.last()[0].startswith(b"shaded"), "single-row terminal failed"
     viewer.quit(b"q")
-print("OK: pause, deterministic shape matching, M toggles all views, debug tone bypass, zoom, light, reset, resume, resize, auto/fallback aspect, one-row terminal, Q cleanup")
+print("OK: default hybrid, three algorithms, builtin palettes, diagnostics, pause/reset/resume, resize, aspect, one-row terminal, Q cleanup")
 
-with Viewer("--cell-aspect", "0.6", "--view", "silhouette", "--contrast", "0.8", "--glyph-mode", "shape") as viewer:
+with Viewer("--cell-aspect", "0.6", "--view", "silhouette", "--contrast", "0.8", "--glyph-mode", "shape", "--palette", "tonal") as viewer:
     assert b"A0.600(manual)" in viewer.last()[-1]
     viewer.resize(80, 24, 800, 600)
     assert b"A0.600(manual)" in viewer.last()[-1]
-    assert b"shape" in viewer.last()[-1]
-    viewer.send(b"m")
-    assert b"brightness" in viewer.last()[-1]
-    viewer.send(b"1.0")
+    viewer.send(b"mp")
+    viewer.collect()
+    viewer.send(b"0")
     reset = viewer.last()
-    assert reset[-1].startswith(b"silhouette") and b"c0.80" in reset[-1] and b"shape" in reset[-1], "reset did not restore CLI settings"
+    assert reset[-1].startswith(b"silhouette") and b"c0.80" in reset[-1] and b"shape/tonal" in reset[-1], "reset did not restore CLI settings"
     viewer.quit(b"\x1b")
-print("OK: manual aspect precedence, CLI glyph mode and reset, Esc cleanup")
+print("OK: manual aspect precedence, CLI palette/mode reset, Esc cleanup")
 
-with Viewer("--glyph-mode", "shape", "--samples-x", "3", "--samples-y", "5") as viewer:
+with Viewer("--glyph-mode", "hybrid", "--samples-x", "3", "--samples-y", "5") as viewer:
     sampled = viewer.last()
-    assert b"shape" in sampled[-1] and any(row.strip() for row in sampled[:-1])
+    assert b"hybrid" in sampled[-1] and any(row.strip() for row in sampled[:-1])
+    assert all(c in STRUCTURAL for row in sampled[:-1] for c in row)
     viewer.send(b"m")
     assert b"brightness" in viewer.last()[-1]
     viewer.quit(b"\x03")
-print("OK: fractional 3x5 shape resampling, toggle and Ctrl+C cleanup")
+print("OK: fractional 3x5 hybrid resampling, toggle and Ctrl+C cleanup")
 
 FONT = str(Path(__file__).resolve().parent / "fixtures/fonts/JetBrainsMono-Regular.ttf")
-with Viewer("--font", FONT, "--font-size", "16", "--font-cell", "12x24", "--glyph-mode", "shape", "--samples-x", "3", "--samples-y", "5") as viewer:
+with Viewer("--font", FONT, "--font-size", "16", "--font-cell", "12x24", "--samples-x", "3", "--samples-y", "5") as viewer:
     initial = viewer.frames(0.4)[-1]
     assert b"font:" in initial[-1] and b"16px/12x24" in initial[-1]
+    assert all(c in STRUCTURAL for row in initial[:-1] for c in row)
     viewer.send(b" ")
     viewer.collect()
     frozen = viewer.frames()
     assert frozen[0][:-1] == frozen[-1][:-1]
-    viewer.send(b"m")
-    assert b"brightness" in viewer.last()[-1]
+    for palette in [b"full", b"tonal", b"structural"]:
+        viewer.send(b"p")
+        frame = viewer.last()
+        assert b"hybrid/" + palette in frame[-1]
+        if palette == b"tonal":
+            assert all(c in RAMP for row in frame[:-1] for c in row)
     for number, mode in enumerate(MODES, 1):
         viewer.send(str(number).encode())
         frame = viewer.last()
         assert frame[-1].startswith(mode + b" paused") and b"font:" in frame[-1]
         viewer.send(b"m")
-        assert b"font:" in viewer.last()[-1]
+        toggled = viewer.last()
+        assert b"font:" in toggled[-1]
+        if number > 1:
+            assert frame[:-1] == toggled[:-1]
+            assert all(c in RAMP for row in frame[:-1] for c in row)
     viewer.send(b"0")
-    assert viewer.last()[-1].startswith(b"shaded paused") and b"shape" in viewer.last()[-1]
+    reset=viewer.last()
+    assert reset[-1].startswith(b"shaded paused") and b"hybrid/structural" in reset[-1]
     viewer.resize(80, 24, 800, 600)
     assert b"font:" in viewer.last()[-1]
     viewer.quit(b"\x1b")
-print("OK: calibrated font atlas, explicit geometry, all views, both algorithms, pause/reset/resize and cleanup")
+print("OK: font atlas, three palettes/algorithms, diagnostic bypass, pause/reset/resize and cleanup")

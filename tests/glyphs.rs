@@ -26,6 +26,13 @@ fn resolved(frame: &Framebuffer, mode: GlyphMode, tone: ToneMap) -> u8 {
         AsciiOptions {
             glyph_mode: mode,
             tone,
+            palette: if mode == GlyphMode::Brightness {
+                limen::glyphs::GlyphPalette::Tonal
+            } else {
+                limen::glyphs::GlyphPalette::Structural
+            },
+            complexity_penalty: 0.0,
+            stability: 0.0,
         },
     );
     grid.get(0, 0).unwrap()

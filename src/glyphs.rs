@@ -4,15 +4,17 @@ use std::{fmt, str::FromStr};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GlyphMode {
-    #[default]
     Brightness,
     Shape,
+    #[default]
+    Hybrid,
 }
 impl fmt::Display for GlyphMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Brightness => "brightness",
             Self::Shape => "shape",
+            Self::Hybrid => "hybrid",
         })
     }
 }
@@ -22,7 +24,54 @@ impl FromStr for GlyphMode {
         match value {
             "brightness" => Ok(Self::Brightness),
             "shape" => Ok(Self::Shape),
-            _ => Err("expected brightness or shape".into()),
+            "hybrid" => Ok(Self::Hybrid),
+            _ => Err("expected brightness, shape or hybrid".into()),
+        }
+    }
+}
+
+/// Candidate repertoire, independent of the selection algorithm and font atlas.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GlyphPalette {
+    Tonal,
+    #[default]
+    Structural,
+    Full,
+}
+impl GlyphPalette {
+    pub const ALL: [Self; 3] = [Self::Tonal, Self::Structural, Self::Full];
+    pub fn contains(self, symbol: u8) -> bool {
+        match self {
+            Self::Tonal => RAMP.contains(&symbol),
+            Self::Structural => RAMP.contains(&symbol) || b"/\\|_()[]<>".contains(&symbol),
+            Self::Full => (b' '..=b'~').contains(&symbol),
+        }
+    }
+    pub fn next(self, has_font: bool) -> Self {
+        match self {
+            Self::Tonal => Self::Structural,
+            Self::Structural if has_font => Self::Full,
+            _ => Self::Tonal,
+        }
+    }
+}
+impl fmt::Display for GlyphPalette {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Tonal => "tonal",
+            Self::Structural => "structural",
+            Self::Full => "full",
+        })
+    }
+}
+impl FromStr for GlyphPalette {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "tonal" => Ok(Self::Tonal),
+            "structural" => Ok(Self::Structural),
+            "full" => Ok(Self::Full),
+            _ => Err("expected tonal, structural or full".into()),
         }
     }
 }

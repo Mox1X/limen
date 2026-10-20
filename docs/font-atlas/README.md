@@ -1,5 +1,7 @@
 # Шрифтовой атлас и плотность ASCII
 
+Это снимки предыдущей версии с выбором из всех 95 символов. Текущий запуск использует hybrid/structural; актуальные сравнения и команды находятся в [палитрах](../palettes/README.md).
+
 Шрифт: JetBrains Mono Regular v2.304, 16 px/em. Печатные ASCII U+0020–U+007E, всего 95 символов. Сгенерированная ячейка 10×22, baseline 17, начало X = 0. Максимальная плотность `@` равна 0.23395723; точки, линии и буквы сохраняют свою фактическую долю покрытия.
 
 Артефакты:
@@ -39,7 +41,7 @@ cargo run --release --example benchmark -- Skull.obj --object part_0 --rotate-x 
   --font-size 16 --snapshot-dir docs/font-atlas/font
 
 cargo run --release -- Skull.obj --object part_0 --rotate-x 180 \
-  --font tests/fixtures/fonts/JetBrainsMono-Regular.ttf --font-size 16 --glyph-mode shape
+  --font tests/fixtures/fonts/JetBrainsMono-Regular.ttf --font-size 16 --glyph-mode shape --palette full --complexity-penalty 0 --stability 0
 ```
 
 Для явной ячейки добавьте `--font-cell 10x22`. Для независимого изменения пропорций проекции используйте `--cell-aspect`. В просмотрщике нажмите Space для фиксации ракурса, затем `M` для сравнения алгоритмов внутри одного атласа. Выбор встроенного/шрифтового атласа производится при запуске.

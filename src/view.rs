@@ -1,5 +1,5 @@
 //! Display settings shared by the terminal application and headless tools.
-use crate::ascii::{GlyphMode, ToneMap};
+use crate::ascii::{AsciiOptions, GlyphMode, GlyphPalette, ToneMap};
 use crate::geometry::DirectionalLight;
 use std::{fmt, str::FromStr};
 
@@ -62,6 +62,9 @@ impl FromStr for ViewMode {
 pub struct ViewSettings {
     pub mode: ViewMode,
     pub glyph_mode: GlyphMode,
+    pub palette: GlyphPalette,
+    pub complexity_penalty: f32,
+    pub stability: f32,
     pub zoom: f32,
     pub light_azimuth: f32,
     pub light_elevation: f32,
@@ -72,7 +75,10 @@ impl Default for ViewSettings {
     fn default() -> Self {
         Self {
             mode: ViewMode::Shaded,
-            glyph_mode: GlyphMode::Brightness,
+            glyph_mode: GlyphMode::Hybrid,
+            palette: GlyphPalette::Structural,
+            complexity_penalty: 0.01,
+            stability: 0.005,
             zoom: 1.0,
             light_azimuth: -55.0,
             light_elevation: 35.0,
@@ -82,6 +88,15 @@ impl Default for ViewSettings {
     }
 }
 impl ViewSettings {
+    pub fn ascii_options(self) -> AsciiOptions {
+        AsciiOptions {
+            glyph_mode: self.glyph_mode,
+            tone: self.effective_tone(),
+            palette: self.palette,
+            complexity_penalty: self.complexity_penalty,
+            stability: self.stability,
+        }
+    }
     pub fn light(self) -> DirectionalLight {
         DirectionalLight::from_angles(self.light_azimuth, self.light_elevation, self.ambient)
     }

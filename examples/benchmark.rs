@@ -2,7 +2,9 @@
 use clap::Parser;
 use glam::{Quat, Vec3};
 use limen::{
-    ascii::{AsciiOptions, AsciiResolver, CharGrid, GlyphMode, ToneMap, resolve_with_tone},
+    ascii::{
+        AsciiOptions, AsciiResolver, CharGrid, GlyphMode, GlyphPalette, ToneMap, resolve_with_tone,
+    },
     font_atlas::{CellSize, FontAtlasConfig, GlyphAtlas},
     geometry::{Camera, DirectionalLight, Mesh, Scene, cube},
     glyphs::SHAPE_GLYPHS,
@@ -32,6 +34,9 @@ struct Args {
     /// Compare brightness and shape on the same fitted scene instead of old/new lighting
     #[arg(long)]
     compare_glyphs: bool,
+    /// Rotation per glyph-comparison frame, radians (6 deg/s at 30 FPS)
+    #[arg(long, default_value_t = 0.003490659_f32)]
+    rotation_step: f32,
     #[arg(long, requires = "compare_glyphs")]
     font: Option<PathBuf>,
     #[arg(long, requires = "font", value_parser = parse_font_size)]
@@ -69,7 +74,7 @@ fn text(grid: &CharGrid) -> Vec<u8> {
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    if !args.rotate_x.is_finite() {
+    if !args.rotate_x.is_finite() || !args.rotation_step.is_finite() {
         return Err("rotation must be finite".into());
     }
     let path = args.model.clone().unwrap_or_else(|| {
@@ -133,7 +138,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &camera,
                         aspect,
                         &mut frame,
-                        RenderOptions { mode },
+                        RenderOptions {
+                            mode,
+                            ..Default::default()
+                        },
                     );
                     let tone = if mode == ViewMode::Shaded {
                         tone
@@ -190,34 +198,113 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
     let orientation = Quat::from_rotation_x(args.rotate_x.to_radians());
     let mut frame = Framebuffer::new(width * 2, height * 4);
     let mut grid = CharGrid::new(width, height);
-    for glyph_mode in [GlyphMode::Brightness, GlyphMode::Shape] {
-        let options = AsciiOptions {
-            glyph_mode,
-            tone: ToneMap::default(),
+    let legacy_palette = if resolver.atlas().is_some() {
+        GlyphPalette::Full
+    } else {
+        GlyphPalette::Structural
+    };
+    let mut configurations = vec![
+        (
+            "brightness",
+            AsciiOptions {
+                glyph_mode: GlyphMode::Brightness,
+                palette: if resolver.atlas().is_some() {
+                    GlyphPalette::Full
+                } else {
+                    GlyphPalette::Tonal
+                },
+                complexity_penalty: 0.0,
+                stability: 0.0,
+                ..Default::default()
+            },
+        ),
+        (
+            "shape",
+            AsciiOptions {
+                glyph_mode: GlyphMode::Shape,
+                palette: legacy_palette,
+                complexity_penalty: 0.0,
+                stability: 0.0,
+                ..Default::default()
+            },
+        ),
+        (
+            "brightness-tonal",
+            AsciiOptions {
+                glyph_mode: GlyphMode::Brightness,
+                palette: GlyphPalette::Tonal,
+                ..Default::default()
+            },
+        ),
+        (
+            "hybrid-tonal",
+            AsciiOptions {
+                palette: GlyphPalette::Tonal,
+                ..Default::default()
+            },
+        ),
+        (
+            "hybrid-structural-unstable",
+            AsciiOptions {
+                stability: 0.0,
+                ..Default::default()
+            },
+        ),
+        ("hybrid-structural", AsciiOptions::default()),
+    ];
+    if resolver.atlas().is_some() {
+        configurations.push((
+            "shape-full-penalized",
+            AsciiOptions {
+                glyph_mode: GlyphMode::Shape,
+                palette: GlyphPalette::Full,
+                stability: 0.0,
+                ..Default::default()
+            },
+        ));
+        configurations.push((
+            "hybrid-full",
+            AsciiOptions {
+                palette: GlyphPalette::Full,
+                ..Default::default()
+            },
+        ));
+    }
+    for (name, options) in configurations {
+        let glyph_mode = options.glyph_mode;
+        let render_options = RenderOptions {
+            capture_features: glyph_mode == GlyphMode::Hybrid,
+            ..Default::default()
         };
-        let start = Instant::now();
+        resolver.reset_history();
+        let mut previous_chars = Vec::new();
+        let mut changes = 0_usize;
+        let mut raster_seconds = 0.0;
+        let mut resolve_seconds = 0.0;
         for i in 0..args.frames {
             scene.instances[0].transform.rotation =
-                Quat::from_rotation_y(i as f32 * 0.01) * orientation;
-            render_with_options(
-                &scene,
-                &camera,
-                aspect,
-                &mut frame,
-                RenderOptions::default(),
-            );
+                Quat::from_rotation_y(i as f32 * args.rotation_step) * orientation;
+            let start = Instant::now();
+            render_with_options(&scene, &camera, aspect, &mut frame, render_options);
+            raster_seconds += start.elapsed().as_secs_f64();
+            let start = Instant::now();
             resolver.resolve(&frame, 2, 4, &mut grid, options);
+            resolve_seconds += start.elapsed().as_secs_f64();
+            let chars: Vec<_> = grid.rows().flatten().copied().collect();
+            changes += chars
+                .iter()
+                .zip(&previous_chars)
+                .filter(|(a, b)| a != b)
+                .count();
+            previous_chars = chars;
             black_box(&grid);
         }
-        let total_ms = start.elapsed().as_secs_f64() * 1000.0 / args.frames as f64;
+        let total_ms = (raster_seconds + resolve_seconds) * 1000.0 / args.frames as f64;
+        let raster_ms = raster_seconds * 1000.0 / args.frames as f64;
+        let moving_resolve_ms = resolve_seconds * 1000.0 / args.frames as f64;
+        resolver.reset_history();
         scene.instances[0].transform.rotation = orientation;
-        render_with_options(
-            &scene,
-            &camera,
-            aspect,
-            &mut frame,
-            RenderOptions::default(),
-        );
+        render_with_options(&scene, &camera, aspect, &mut frame, render_options);
         let start = Instant::now();
         for _ in 0..args.frames {
             resolver.resolve(black_box(&frame), 2, 4, &mut grid, options);
@@ -225,11 +312,11 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
         }
         let resolve_ms = start.elapsed().as_secs_f64() * 1000.0 / args.frames as f64;
         println!(
-            "{glyph_mode}: {triangles} triangles, {width}x{height} chars, 2x4 samples, total {total_ms:.3} ms/frame, resolve-only {resolve_ms:.3} ms/frame, excluding terminal I/O"
+            "{name}: {triangles} triangles, {width}x{height} chars, 2x4 samples, total {total_ms:.3} ms/frame (raster {raster_ms:.3}, moving resolve {moving_resolve_ms:.3}), fixed resolve {resolve_ms:.3} ms/frame; changed characters={changes}, excluding terminal I/O and statistics"
         );
         if let Some(ref directory) = args.snapshot_dir {
             std::fs::create_dir_all(directory)?;
-            std::fs::write(directory.join(format!("{glyph_mode}.txt")), text(&grid))?;
+            std::fs::write(directory.join(format!("{name}.txt")), text(&grid))?;
             render_with_options(
                 &scene,
                 &camera,
@@ -237,6 +324,7 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
                 &mut frame,
                 RenderOptions {
                     mode: ViewMode::Silhouette,
+                    ..Default::default()
                 },
             );
             resolver.resolve(
@@ -247,10 +335,19 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
                 AsciiOptions {
                     glyph_mode,
                     tone: ToneMap::LINEAR,
+                    palette: if resolver.atlas().is_some() {
+                        limen::glyphs::GlyphPalette::Full
+                    } else if glyph_mode == GlyphMode::Brightness {
+                        limen::glyphs::GlyphPalette::Tonal
+                    } else {
+                        limen::glyphs::GlyphPalette::Structural
+                    },
+                    complexity_penalty: 0.0,
+                    stability: 0.0,
                 },
             );
             std::fs::write(
-                directory.join(format!("{glyph_mode}-silhouette.txt")),
+                directory.join(format!("{name}-silhouette.txt")),
                 text(&grid),
             )?;
         }
@@ -283,6 +380,15 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
                     AsciiOptions {
                         glyph_mode,
                         tone: ToneMap::LINEAR,
+                        palette: if resolver.atlas().is_some() {
+                            limen::glyphs::GlyphPalette::Full
+                        } else if glyph_mode == GlyphMode::Brightness {
+                            limen::glyphs::GlyphPalette::Tonal
+                        } else {
+                            limen::glyphs::GlyphPalette::Structural
+                        },
+                        complexity_penalty: 0.0,
+                        stability: 0.0,
                     },
                 );
                 outputs.push(cell.get(0, 0).unwrap() as char);

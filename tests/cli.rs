@@ -210,3 +210,37 @@ fn font_options_validate_before_terminal_setup() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot parse font"));
     assert!(!output.stderr.contains(&0x1b));
 }
+
+#[test]
+fn palettes_and_selection_controls_validate_before_terminal_setup() {
+    for args in [
+        vec!["--palette", "unknown"],
+        vec!["--palette", "full"],
+        vec!["--complexity-penalty", "NaN"],
+        vec!["--complexity-penalty", "-0.1"],
+        vec!["--stability", "inf"],
+        vec!["--stability", "1.1"],
+    ] {
+        let output = binary().args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(!output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b));
+    }
+    let output = binary().args(["--palette", "full"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires --font"));
+    for palette in ["tonal", "structural"] {
+        let output = binary()
+            .args([
+                "--palette",
+                palette,
+                "--glyph-mode",
+                "hybrid",
+                "--complexity-penalty",
+                "0",
+                "--stability",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+    }
+}

@@ -5,5 +5,6 @@ pub mod glyphs;
 pub mod obj;
 pub mod render;
 mod sampling;
+mod selection;
 pub mod terminal;
 pub mod view;

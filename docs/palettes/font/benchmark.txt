@@ -1,0 +1,9 @@
+atlas: JetBrains Mono Regular 16px/em cell=10x22 baseline=17 max_density=0.233957, build 7.218 ms
+brightness: 31016 triangles, 120x40 chars, 2x4 samples, total 7.919 ms/frame (raster 7.744, moving resolve 0.176), fixed resolve 0.153 ms/frame; changed characters=91152, excluding terminal I/O and statistics
+shape: 31016 triangles, 120x40 chars, 2x4 samples, total 8.502 ms/frame (raster 7.880, moving resolve 0.622), fixed resolve 0.572 ms/frame; changed characters=37457, excluding terminal I/O and statistics
+brightness-tonal: 31016 triangles, 120x40 chars, 2x4 samples, total 8.112 ms/frame (raster 7.963, moving resolve 0.149), fixed resolve 0.132 ms/frame; changed characters=20495, excluding terminal I/O and statistics
+hybrid-tonal: 31016 triangles, 120x40 chars, 2x4 samples, total 9.233 ms/frame (raster 8.000, moving resolve 1.233), fixed resolve 1.110 ms/frame; changed characters=14828, excluding terminal I/O and statistics
+hybrid-structural-unstable: 31016 triangles, 120x40 chars, 2x4 samples, total 8.947 ms/frame (raster 7.783, moving resolve 1.164), fixed resolve 1.098 ms/frame; changed characters=17847, excluding terminal I/O and statistics
+hybrid-structural: 31016 triangles, 120x40 chars, 2x4 samples, total 9.043 ms/frame (raster 7.808, moving resolve 1.235), fixed resolve 1.120 ms/frame; changed characters=16194, excluding terminal I/O and statistics
+shape-full-penalized: 31016 triangles, 120x40 chars, 2x4 samples, total 8.210 ms/frame (raster 7.552, moving resolve 0.658), fixed resolve 0.597 ms/frame; changed characters=37333, excluding terminal I/O and statistics
+hybrid-full: 31016 triangles, 120x40 chars, 2x4 samples, total 9.166 ms/frame (raster 7.816, moving resolve 1.350), fixed resolve 1.243 ms/frame; changed characters=18997, excluding terminal I/O and statistics

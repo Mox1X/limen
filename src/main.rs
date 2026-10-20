@@ -5,7 +5,7 @@ use crossterm::{
 };
 use glam::{EulerRot, Quat};
 use limen::{
-    ascii::{AsciiOptions, AsciiResolver, CharGrid, GlyphMode, ToneMap},
+    ascii::{AsciiResolver, CharGrid, GlyphMode, GlyphPalette, ToneMap},
     font_atlas::{CellSize, FontAtlasConfig, GlyphAtlas},
     geometry::{self, Camera, Scene},
     obj,
@@ -55,10 +55,19 @@ struct Args {
     /// Initial display mode: shaded, depth, silhouette, normal-x, normal-y, normal-z
     #[arg(long, default_value = "shaded")]
     view: ViewMode,
-    /// ASCII selection algorithm: brightness or experimental shape matching
-    #[arg(long, default_value = "brightness")]
+    /// ASCII selection algorithm: brightness, shape or geometry-aware hybrid
+    #[arg(long, default_value = "hybrid")]
     glyph_mode: GlyphMode,
-    /// TTF/OTF font used to calibrate both glyph algorithms
+    /// Candidate repertoire: tonal, structural or full (requires --font)
+    #[arg(long, default_value = "structural")]
+    palette: GlyphPalette,
+    /// Preference for simple symbols in shape/hybrid matching (0 disables)
+    #[arg(long, default_value = "0.01", value_parser = parse_unit)]
+    complexity_penalty: f32,
+    /// Maximum error margin for retaining a similar previous cell (0 disables)
+    #[arg(long, default_value = "0.005", value_parser = parse_unit)]
+    stability: f32,
+    /// TTF/OTF font used to calibrate glyph selection
     #[arg(long)]
     font: Option<PathBuf>,
     /// Font rasterization size in pixels per em (default 16 with --font)
@@ -104,6 +113,9 @@ fn parse_bounded(s: &str, min: f32, max: f32) -> Result<f32, String> {
         Err(format!("expected a finite value between {min} and {max}"))
     }
 }
+fn parse_unit(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.0, 1.0)
+}
 fn parse_font_size(s: &str) -> Result<f32, String> {
     parse_bounded(s, 4.0, 128.0)
 }
@@ -138,6 +150,9 @@ fn run() -> Result<(), Box<dyn Error>> {
             );
         }
         return Ok(());
+    }
+    if args.palette == GlyphPalette::Full && args.font.is_none() {
+        return Err("--palette full requires --font".into());
     }
     // Validate assets before changing terminal state.
     let mesh = match args.model {
@@ -177,6 +192,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let initial_settings = ViewSettings {
         mode: args.view,
         glyph_mode: args.glyph_mode,
+        palette: args.palette,
+        complexity_penalty: args.complexity_penalty,
+        stability: args.stability,
         zoom: args.zoom,
         light_azimuth: args.light_azimuth,
         light_elevation: args.light_elevation,
@@ -251,22 +269,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                 &mut frame,
                 RenderOptions {
                     mode: settings.mode,
+                    capture_features: settings.glyph_mode == GlyphMode::Hybrid,
                 },
             );
-            resolver.resolve(
-                &frame,
-                sx,
-                sy,
-                &mut grid,
-                AsciiOptions {
-                    glyph_mode: settings.glyph_mode,
-                    tone: settings.effective_tone(),
-                },
-            );
+            resolver.resolve(&frame, sx, sy, &mut grid, settings.ascii_options());
         }
         if width > 0 && size.rows > 0 {
             let status = format!(
-                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {} {} | M 1-6 +/- arrows ,. [] 0 Space R Q",
+                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {}/{} {}{} | M P 1-6 +/- arrows ,. [] 0 Space R Q",
                 settings.mode,
                 if paused { " paused" } else { "" },
                 settings.zoom,
@@ -277,7 +287,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 cell_aspect.value,
                 cell_aspect.source,
                 settings.glyph_mode,
+                settings.palette,
                 atlas_status,
+                if settings.mode == ViewMode::Shaded {
+                    ""
+                } else {
+                    " debug:tonal"
+                },
             );
             terminal_output.present_with_status(&grid, &status)?;
         }
@@ -292,13 +308,22 @@ fn run() -> Result<(), Box<dyn Error>> {
                 if key.kind == KeyEventKind::Release {
                     continue;
                 }
+                let old_options = settings.ascii_options();
+                let old_light = (
+                    settings.light_azimuth,
+                    settings.light_elevation,
+                    settings.ambient,
+                );
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q' | 'Q') => return Ok(()),
                     KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok(());
                     }
                     KeyCode::Char(' ') if key.kind == KeyEventKind::Press => paused = !paused,
-                    KeyCode::Char('r' | 'R') => angle = 0.0,
+                    KeyCode::Char('r' | 'R') => {
+                        angle = 0.0;
+                        resolver.reset_history();
+                    }
                     KeyCode::Char('1'..='6') => {
                         if let KeyCode::Char(number) = key.code {
                             settings.mode = ViewMode::ALL[(number as u8 - b'1') as usize];
@@ -315,13 +340,26 @@ fn run() -> Result<(), Box<dyn Error>> {
                     KeyCode::Char('[') => settings.adjust(Adjustment::Gamma(-0.1)),
                     KeyCode::Char(']') => settings.adjust(Adjustment::Gamma(0.1)),
                     KeyCode::Char('0') => settings = initial_settings,
+                    KeyCode::Char('p' | 'P') => {
+                        settings.palette = settings.palette.next(resolver.atlas().is_some());
+                    }
                     KeyCode::Char('m' | 'M') => {
                         settings.glyph_mode = match settings.glyph_mode {
                             GlyphMode::Brightness => GlyphMode::Shape,
-                            GlyphMode::Shape => GlyphMode::Brightness,
+                            GlyphMode::Shape => GlyphMode::Hybrid,
+                            GlyphMode::Hybrid => GlyphMode::Brightness,
                         }
                     }
                     _ => {}
+                }
+                if settings.ascii_options() != old_options
+                    || (
+                        settings.light_azimuth,
+                        settings.light_elevation,
+                        settings.ambient,
+                    ) != old_light
+                {
+                    resolver.reset_history();
                 }
             }
             if Instant::now() >= deadline {

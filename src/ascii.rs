@@ -1,8 +1,9 @@
 use crate::font_atlas::GlyphAtlas;
-pub use crate::glyphs::GlyphMode;
-use crate::glyphs::match_glyph;
+pub use crate::glyphs::{GlyphMode, GlyphPalette};
 use crate::render::Framebuffer;
 use crate::sampling::CellSampler;
+use crate::selection::{Candidates, Cell, edge};
+use crate::view::ViewMode;
 
 pub const RAMP: &[u8] = b" .:-=+*#%@";
 
@@ -34,10 +35,25 @@ impl Default for ToneMap {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AsciiOptions {
     pub glyph_mode: GlyphMode,
     pub tone: ToneMap,
+    pub palette: GlyphPalette,
+    pub complexity_penalty: f32,
+    pub stability: f32,
+}
+
+impl Default for AsciiOptions {
+    fn default() -> Self {
+        Self {
+            glyph_mode: GlyphMode::Hybrid,
+            tone: ToneMap::default(),
+            palette: GlyphPalette::Structural,
+            complexity_penalty: 0.01,
+            stability: 0.005,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +123,8 @@ pub fn resolve_with_tone(
         AsciiOptions {
             glyph_mode: GlyphMode::Brightness,
             tone,
+            palette: GlyphPalette::Tonal,
+            ..Default::default()
         },
     );
 }
@@ -121,21 +139,37 @@ pub fn resolve_with_options(
     AsciiResolver::default().resolve(frame, samples_x, samples_y, grid, options);
 }
 
-/// Owns an optional calibrated atlas and cached resampling weights.
+/// Owns the font atlas, palette caches and optional per-cell temporal history.
 #[derive(Default)]
 pub struct AsciiResolver {
     atlas: Option<GlyphAtlas>,
     sampler: Option<(usize, usize, CellSampler)>,
+    candidates: Option<[Candidates; 3]>,
+    history_key: Option<HistoryKey>,
+    history: Vec<Option<(Cell, usize)>>,
+    cells: Vec<Cell>,
+}
+#[derive(PartialEq)]
+struct HistoryKey {
+    dimensions: (usize, usize, usize, usize),
+    options: AsciiOptions,
+    projection: Option<(f32, f32)>,
+    matrix: Option<glam::Mat4>,
+    mode: ViewMode,
 }
 impl AsciiResolver {
     pub fn with_atlas(atlas: GlyphAtlas) -> Self {
         Self {
             atlas: Some(atlas),
-            sampler: None,
+            ..Self::default()
         }
     }
     pub fn atlas(&self) -> Option<&GlyphAtlas> {
         self.atlas.as_ref()
+    }
+    pub fn reset_history(&mut self) {
+        self.history.fill(None);
+        self.history_key = None;
     }
     pub fn resolve(
         &mut self,
@@ -143,8 +177,37 @@ impl AsciiResolver {
         samples_x: usize,
         samples_y: usize,
         grid: &mut CharGrid,
-        options: AsciiOptions,
+        mut options: AsciiOptions,
     ) {
+        assert!(samples_x > 0 && samples_y > 0);
+        assert_eq!(frame.width(), grid.width() * samples_x);
+        assert_eq!(frame.height(), grid.height() * samples_y);
+        assert!(
+            options.palette != GlyphPalette::Full || self.atlas.is_some(),
+            "full palette requires a font atlas"
+        );
+        assert!(options.complexity_penalty.is_finite() && options.complexity_penalty >= 0.0);
+        assert!(options.stability.is_finite() && options.stability >= 0.0);
+        if frame.view_mode() != ViewMode::Shaded {
+            options = AsciiOptions {
+                glyph_mode: GlyphMode::Brightness,
+                palette: GlyphPalette::Tonal,
+                tone: ToneMap::LINEAR,
+                complexity_penalty: 0.0,
+                stability: 0.0,
+            };
+        }
+        let key = HistoryKey {
+            dimensions: (grid.width(), grid.height(), samples_x, samples_y),
+            options,
+            projection: frame.clip_planes(),
+            matrix: frame.view_projection(),
+            mode: frame.view_mode(),
+        };
+        if self.history_key.as_ref() != Some(&key) {
+            self.reset_history();
+            self.history_key = Some(key);
+        }
         if self
             .sampler
             .as_ref()
@@ -152,65 +215,112 @@ impl AsciiResolver {
         {
             self.sampler = None;
         }
-        assert!(samples_x > 0 && samples_y > 0);
-        assert_eq!(frame.width(), grid.width() * samples_x);
-        assert_eq!(frame.height(), grid.height() * samples_y);
-        if options.glyph_mode == GlyphMode::Shape {
-            let (_, _, sampler) = self.sampler.get_or_insert_with(|| {
-                (samples_x, samples_y, CellSampler::new(samples_x, samples_y))
-            });
+        let sets = self.candidates.get_or_insert_with(|| {
+            GlyphPalette::ALL.map(|p| Candidates::new(self.atlas.as_ref(), p))
+        });
+        let candidates = &sets[options.palette as usize];
+        if options.glyph_mode == GlyphMode::Brightness {
+            let divisor = (samples_x * samples_y) as f32;
             for y in 0..grid.height() {
                 for x in 0..grid.width() {
-                    let (values, covered) = sampler.read(frame, x * samples_x, y * samples_y);
-                    let pattern = std::array::from_fn(|i| {
-                        if covered[i] {
-                            options.tone.apply(values[i])
-                        } else {
-                            0.0
+                    let mut sum = 0.0;
+                    let mut covered = false;
+                    for sy in 0..samples_y {
+                        for sx in 0..samples_x {
+                            let i = (y * samples_y + sy) * frame.width() + x * samples_x + sx;
+                            sum += frame.brightness()[i];
+                            covered |= frame.depth()[i].is_finite();
                         }
-                    });
-                    grid.set(
-                        x,
-                        y,
-                        match &self.atlas {
-                            Some(atlas) => atlas.select_shape(pattern),
-                            None => match_glyph(pattern),
-                        },
-                    );
+                    }
+                    let mean = options.tone.apply(sum / divisor);
+                    // Preserve the legacy ramp's rounding at exact half steps.
+                    let symbol = if !covered {
+                        b' '
+                    } else if self.atlas.is_none() && options.palette == GlyphPalette::Tonal {
+                        brightness_char(mean)
+                    } else if options.palette == GlyphPalette::Full {
+                        self.atlas.as_ref().unwrap().select_brightness(mean)
+                    } else {
+                        candidates.brightness(mean)
+                    };
+                    grid.set(x, y, symbol);
                 }
             }
             return;
         }
-        let tone = options.tone;
-        let divisor = (samples_x * samples_y) as f32;
+        let (_, _, sampler) = self
+            .sampler
+            .get_or_insert_with(|| (samples_x, samples_y, CellSampler::new(samples_x, samples_y)));
+        let count = grid.width() * grid.height();
+        self.cells.resize(count, Cell::default());
+        self.history.resize(count, None);
+        let geometry = options.glyph_mode == GlyphMode::Hybrid || options.stability > 0.0;
         for y in 0..grid.height() {
             for x in 0..grid.width() {
-                let mut sum = 0.0;
-                let mut covered = false;
-                for sy in 0..samples_y {
-                    for sx in 0..samples_x {
-                        let index = (y * samples_y + sy) * frame.width() + x * samples_x + sx;
-                        sum += frame.brightness()[index];
-                        covered |= frame.depth()[index].is_finite();
-                    }
-                }
-                grid.set(
-                    x,
-                    y,
-                    if covered {
-                        match &self.atlas {
-                            Some(atlas) => atlas.select_brightness(tone.apply(sum / divisor)),
-                            None => brightness_char(tone.apply(sum / divisor)),
-                        }
-                    } else {
-                        b' '
-                    },
+                self.cells[y * grid.width() + x] = Cell::read(
+                    frame,
+                    sampler,
+                    x * samples_x,
+                    y * samples_y,
+                    options.tone,
+                    geometry,
                 );
+            }
+        }
+        for y in 0..grid.height() {
+            for x in 0..grid.width() {
+                let i = y * grid.width() + x;
+                let cell = self.cells[i];
+                if cell.empty() {
+                    grid.set(x, y, b' ');
+                    self.history[i] = None;
+                    continue;
+                }
+                if self.atlas.is_none()
+                    && options.palette == GlyphPalette::Structural
+                    && options.glyph_mode == GlyphMode::Shape
+                    && options.complexity_penalty == 0.0
+                    && options.stability == 0.0
+                {
+                    grid.set(x, y, crate::glyphs::match_glyph(cell.pattern));
+                    continue;
+                }
+                // Explicitly preserve the previous full-atlas experimental algorithm.
+                if options.palette == GlyphPalette::Full
+                    && options.glyph_mode == GlyphMode::Shape
+                    && options.complexity_penalty == 0.0
+                    && options.stability == 0.0
+                {
+                    grid.set(
+                        x,
+                        y,
+                        self.atlas.as_ref().unwrap().select_shape(cell.pattern),
+                    );
+                    continue;
+                }
+                let boundary = options.glyph_mode == GlyphMode::Hybrid
+                    && edge(&self.cells, grid.width(), grid.height(), x, y);
+                let chosen = candidates.choose(
+                    cell.pattern,
+                    options.glyph_mode,
+                    boundary,
+                    options.complexity_penalty,
+                );
+                let mut selected = chosen.0;
+                if options.stability > 0.0
+                    && let Some((previous, index)) = self.history[i]
+                    && cell.similar(&previous)
+                {
+                    selected = candidates.retain(index, chosen, cell.pattern, boundary, options);
+                }
+                grid.set(x, y, candidates.symbol(selected));
+                self.history[i] = Some((cell, selected));
             }
         }
     }
 }
 
+#[cfg(test)]
 impl CellSampler {
     fn read(&self, frame: &Framebuffer, x: usize, y: usize) -> ([f32; 8], [bool; 8]) {
         self.sample(|sx, sy| {

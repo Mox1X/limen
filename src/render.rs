@@ -5,6 +5,7 @@ use glam::{Mat3, Vec2, Vec3, Vec4};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderOptions {
     pub mode: ViewMode,
+    pub capture_features: bool,
 }
 
 pub struct Framebuffer {
@@ -12,6 +13,10 @@ pub struct Framebuffer {
     height: usize,
     depth: Vec<f32>,
     brightness: Vec<f32>,
+    normals: Option<Vec<Vec3>>,
+    clip_planes: Option<(f32, f32)>,
+    mode: ViewMode,
+    view_projection: Option<glam::Mat4>,
 }
 impl Framebuffer {
     pub fn new(width: usize, height: usize) -> Self {
@@ -20,6 +25,10 @@ impl Framebuffer {
             height,
             depth: vec![f32::INFINITY; width * height],
             brightness: vec![0.0; width * height],
+            normals: None,
+            clip_planes: None,
+            mode: ViewMode::Shaded,
+            view_projection: None,
         }
     }
     pub fn width(&self) -> usize {
@@ -33,6 +42,20 @@ impl Framebuffer {
     }
     pub fn depth(&self) -> &[f32] {
         &self.depth
+    }
+    /// Normals belong to the same winning samples as depth and brightness.
+    /// Shaded frames store world-space normals; diagnostic frames do not capture features.
+    pub fn normals(&self) -> Option<&[Vec3]> {
+        self.normals.as_deref()
+    }
+    pub fn view_projection(&self) -> Option<glam::Mat4> {
+        self.view_projection
+    }
+    pub fn clip_planes(&self) -> Option<(f32, f32)> {
+        self.clip_planes
+    }
+    pub fn view_mode(&self) -> ViewMode {
+        self.mode
     }
     fn visualize_depth(&mut self, camera: &Camera) {
         let linear =
@@ -58,8 +81,17 @@ impl Framebuffer {
     pub fn clear(&mut self) {
         self.depth.fill(f32::INFINITY);
         self.brightness.fill(0.0);
+        if let Some(normals) = &mut self.normals {
+            normals.fill(Vec3::ZERO);
+        }
+        self.clip_planes = None;
+        self.view_projection = None;
+        self.mode = ViewMode::Shaded;
     }
     pub fn write(&mut self, x: usize, y: usize, depth: f32, brightness: f32) {
+        self.write_with_normal(x, y, depth, brightness, Vec3::ZERO);
+    }
+    fn write_with_normal(&mut self, x: usize, y: usize, depth: f32, brightness: f32, normal: Vec3) {
         if x >= self.width
             || y >= self.height
             || !depth.is_finite()
@@ -71,6 +103,9 @@ impl Framebuffer {
         if depth < self.depth[index] {
             self.depth[index] = depth;
             self.brightness[index] = brightness.clamp(0.0, 1.0);
+            if let Some(normals) = &mut self.normals {
+                normals[index] = normal.normalize_or_zero();
+            }
         }
     }
 }
@@ -206,7 +241,7 @@ fn rasterize(
                 ViewMode::Silhouette | ViewMode::Depth => 1.0,
                 _ => normal.normalize_or_zero()[mode.normal_axis().unwrap()] * 0.5 + 0.5,
             };
-            frame.write(x, y, depth, brightness);
+            frame.write_with_normal(x, y, depth, brightness, normal);
         }
     }
 }
@@ -224,11 +259,21 @@ pub fn render_with_options(
     frame: &mut Framebuffer,
     options: RenderOptions,
 ) {
+    if options.capture_features && options.mode == ViewMode::Shaded {
+        frame
+            .normals
+            .get_or_insert_with(|| vec![Vec3::ZERO; frame.width * frame.height]);
+    } else {
+        frame.normals = None;
+    }
     frame.clear();
+    frame.mode = options.mode;
+    frame.clip_planes = Some((camera.near, camera.far));
     if frame.width == 0 || frame.height == 0 || !aspect.is_finite() || aspect <= 0.0 {
         return;
     }
     let view_projection = camera.view_projection(aspect);
+    frame.view_projection = Some(view_projection);
     for instance in &scene.instances {
         let model = instance.transform.matrix();
         if !model.is_finite() || model.determinant().abs() < 1e-12 {
@@ -297,6 +342,37 @@ mod tests {
             inverse_w: 1.0,
             normal_over_w: normal,
         }
+    }
+    #[test]
+    fn features_follow_depth_winners_and_clear_between_frames() {
+        let mut frame = Framebuffer::new(2, 4);
+        frame.normals = Some(vec![Vec3::ZERO; 8]);
+        frame.write_with_normal(0, 0, 0.4, 0.2, Vec3::X);
+        frame.write_with_normal(0, 0, 0.8, 0.9, Vec3::Y);
+        frame.write_with_normal(1, 0, 0.7, 0.3, Vec3::Y);
+        frame.write_with_normal(1, 0, 0.2, 0.8, Vec3::Z);
+        assert_eq!(frame.depth()[0], 0.4);
+        assert_eq!(frame.brightness()[0], 0.2);
+        assert_eq!(frame.normals().unwrap()[0], Vec3::X);
+        assert_eq!(frame.normals().unwrap()[1], Vec3::Z);
+        frame.clear();
+        assert!(frame.depth().iter().all(|d| !d.is_finite()));
+        assert!(frame.normals().unwrap().iter().all(|&n| n == Vec3::ZERO));
+        let scene = Scene::from_mesh(crate::geometry::cube());
+        let camera = Camera::fitted(scene.instances[0].mesh.bounding_sphere().unwrap(), 1.0, 1.0);
+        render_with_options(
+            &scene,
+            &camera,
+            1.0,
+            &mut frame,
+            RenderOptions {
+                capture_features: true,
+                ..Default::default()
+            },
+        );
+        assert!(frame.normals().is_some());
+        render_with_options(&scene, &camera, 1.0, &mut frame, RenderOptions::default());
+        assert!(frame.normals().is_none());
     }
     #[test]
     fn shared_edge_has_no_cracks_or_double_coverage() {

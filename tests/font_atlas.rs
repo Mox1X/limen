@@ -112,7 +112,19 @@ fn resolver_reuses_atlas_across_sampling_modes_and_leaves_background_blank() {
         let mut grid = CharGrid::new(2, 1);
         let expected = resolver.atlas().unwrap().select_brightness(tone.apply(0.4));
         for glyph_mode in [GlyphMode::Brightness, GlyphMode::Shape] {
-            resolver.resolve(&frame, sx, sy, &mut grid, AsciiOptions { glyph_mode, tone });
+            resolver.resolve(
+                &frame,
+                sx,
+                sy,
+                &mut grid,
+                AsciiOptions {
+                    glyph_mode,
+                    tone,
+                    palette: limen::glyphs::GlyphPalette::Full,
+                    complexity_penalty: 0.0,
+                    stability: 0.0,
+                },
+            );
             assert_eq!(grid.get(0, 0), Some(expected));
             assert_eq!(grid.get(1, 0), Some(b' '));
         }

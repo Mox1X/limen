@@ -2,3 +2,4 @@
 docs/readability/*.txt whitespace=-blank-at-eof
 docs/glyph-matching/*.txt whitespace=-blank-at-eof
 docs/font-atlas/**/*.txt whitespace=-blank-at-eof
+docs/palettes/**/*.txt whitespace=-blank-at-eof

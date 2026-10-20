@@ -1,0 +1,8 @@
+font=JetBrains Mono Regular
+size_px=16
+cell=10x22
+baseline=17
+origin_x=0
+glyphs=95
+max_density=0.23395723
+density_order= `.-',_:;~"^!=><+|r?\/LJ*lv)(TYcxz]uit[y7{fn4}1IjsFoZCeVhk62a9X3PSA5wUEqdpbmK#HOGgD0%R8&QMBN$W@

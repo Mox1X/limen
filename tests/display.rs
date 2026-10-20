@@ -23,7 +23,16 @@ fn triangle() -> Mesh {
 }
 fn draw(scene: &Scene, camera: &Camera, mode: ViewMode) -> Framebuffer {
     let mut frame = Framebuffer::new(120, 80);
-    render_with_options(scene, camera, 1.5, &mut frame, RenderOptions { mode });
+    render_with_options(
+        scene,
+        camera,
+        1.5,
+        &mut frame,
+        RenderOptions {
+            mode,
+            ..Default::default()
+        },
+    );
     frame
 }
 fn visible(frame: &Framebuffer) -> usize {
@@ -124,6 +133,7 @@ fn sampling_does_not_change_physical_proportions() {
                 &mut frame,
                 RenderOptions {
                     mode: ViewMode::Silhouette,
+                    ..Default::default()
                 },
             );
             let points: Vec<_> = frame
