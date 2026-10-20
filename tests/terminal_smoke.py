@@ -152,3 +152,26 @@ with Viewer("--glyph-mode", "shape", "--samples-x", "3", "--samples-y", "5") as 
     assert b"brightness" in viewer.last()[-1]
     viewer.quit(b"\x03")
 print("OK: fractional 3x5 shape resampling, toggle and Ctrl+C cleanup")
+
+FONT = str(Path(__file__).resolve().parent / "fixtures/fonts/JetBrainsMono-Regular.ttf")
+with Viewer("--font", FONT, "--font-size", "16", "--font-cell", "12x24", "--glyph-mode", "shape", "--samples-x", "3", "--samples-y", "5") as viewer:
+    initial = viewer.frames(0.4)[-1]
+    assert b"font:" in initial[-1] and b"16px/12x24" in initial[-1]
+    viewer.send(b" ")
+    viewer.collect()
+    frozen = viewer.frames()
+    assert frozen[0][:-1] == frozen[-1][:-1]
+    viewer.send(b"m")
+    assert b"brightness" in viewer.last()[-1]
+    for number, mode in enumerate(MODES, 1):
+        viewer.send(str(number).encode())
+        frame = viewer.last()
+        assert frame[-1].startswith(mode + b" paused") and b"font:" in frame[-1]
+        viewer.send(b"m")
+        assert b"font:" in viewer.last()[-1]
+    viewer.send(b"0")
+    assert viewer.last()[-1].startswith(b"shaded paused") and b"shape" in viewer.last()[-1]
+    viewer.resize(80, 24, 800, 600)
+    assert b"font:" in viewer.last()[-1]
+    viewer.quit(b"\x1b")
+print("OK: calibrated font atlas, explicit geometry, all views, both algorithms, pause/reset/resize and cleanup")

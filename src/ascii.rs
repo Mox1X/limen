@@ -1,6 +1,8 @@
+use crate::font_atlas::GlyphAtlas;
 pub use crate::glyphs::GlyphMode;
 use crate::glyphs::match_glyph;
 use crate::render::Framebuffer;
+use crate::sampling::CellSampler;
 
 pub const RAMP: &[u8] = b" .:-=+*#%@";
 
@@ -116,104 +118,105 @@ pub fn resolve_with_options(
     grid: &mut CharGrid,
     options: AsciiOptions,
 ) {
-    assert!(samples_x > 0 && samples_y > 0);
-    assert_eq!(frame.width(), grid.width() * samples_x);
-    assert_eq!(frame.height(), grid.height() * samples_y);
-    if options.glyph_mode == GlyphMode::Shape {
-        let sampler = CellSampler::new(samples_x, samples_y);
-        for y in 0..grid.height() {
-            for x in 0..grid.width() {
-                let (values, covered) = sampler.read(frame, x * samples_x, y * samples_y);
-                let pattern = std::array::from_fn(|i| {
-                    if covered[i] {
-                        options.tone.apply(values[i])
-                    } else {
-                        0.0
-                    }
-                });
-                grid.set(x, y, match_glyph(pattern));
-            }
+    AsciiResolver::default().resolve(frame, samples_x, samples_y, grid, options);
+}
+
+/// Owns an optional calibrated atlas and cached resampling weights.
+#[derive(Default)]
+pub struct AsciiResolver {
+    atlas: Option<GlyphAtlas>,
+    sampler: Option<(usize, usize, CellSampler)>,
+}
+impl AsciiResolver {
+    pub fn with_atlas(atlas: GlyphAtlas) -> Self {
+        Self {
+            atlas: Some(atlas),
+            sampler: None,
         }
-        return;
     }
-    let tone = options.tone;
-    let divisor = (samples_x * samples_y) as f32;
-    for y in 0..grid.height() {
-        for x in 0..grid.width() {
-            let mut sum = 0.0;
-            let mut covered = false;
-            for sy in 0..samples_y {
-                for sx in 0..samples_x {
-                    let index = (y * samples_y + sy) * frame.width() + x * samples_x + sx;
-                    sum += frame.brightness()[index];
-                    covered |= frame.depth()[index].is_finite();
+    pub fn atlas(&self) -> Option<&GlyphAtlas> {
+        self.atlas.as_ref()
+    }
+    pub fn resolve(
+        &mut self,
+        frame: &Framebuffer,
+        samples_x: usize,
+        samples_y: usize,
+        grid: &mut CharGrid,
+        options: AsciiOptions,
+    ) {
+        if self
+            .sampler
+            .as_ref()
+            .is_some_and(|(x, y, _)| (*x, *y) != (samples_x, samples_y))
+        {
+            self.sampler = None;
+        }
+        assert!(samples_x > 0 && samples_y > 0);
+        assert_eq!(frame.width(), grid.width() * samples_x);
+        assert_eq!(frame.height(), grid.height() * samples_y);
+        if options.glyph_mode == GlyphMode::Shape {
+            let (_, _, sampler) = self.sampler.get_or_insert_with(|| {
+                (samples_x, samples_y, CellSampler::new(samples_x, samples_y))
+            });
+            for y in 0..grid.height() {
+                for x in 0..grid.width() {
+                    let (values, covered) = sampler.read(frame, x * samples_x, y * samples_y);
+                    let pattern = std::array::from_fn(|i| {
+                        if covered[i] {
+                            options.tone.apply(values[i])
+                        } else {
+                            0.0
+                        }
+                    });
+                    grid.set(
+                        x,
+                        y,
+                        match &self.atlas {
+                            Some(atlas) => atlas.select_shape(pattern),
+                            None => match_glyph(pattern),
+                        },
+                    );
                 }
             }
-            grid.set(
-                x,
-                y,
-                if covered {
-                    brightness_char(tone.apply(sum / divisor))
-                } else {
-                    b' '
-                },
-            );
+            return;
+        }
+        let tone = options.tone;
+        let divisor = (samples_x * samples_y) as f32;
+        for y in 0..grid.height() {
+            for x in 0..grid.width() {
+                let mut sum = 0.0;
+                let mut covered = false;
+                for sy in 0..samples_y {
+                    for sx in 0..samples_x {
+                        let index = (y * samples_y + sy) * frame.width() + x * samples_x + sx;
+                        sum += frame.brightness()[index];
+                        covered |= frame.depth()[index].is_finite();
+                    }
+                }
+                grid.set(
+                    x,
+                    y,
+                    if covered {
+                        match &self.atlas {
+                            Some(atlas) => atlas.select_brightness(tone.apply(sum / divisor)),
+                            None => brightness_char(tone.apply(sum / divisor)),
+                        }
+                    } else {
+                        b' '
+                    },
+                );
+            }
         }
     }
 }
 
-// Weights are prepared once per resolve, never per character. The usual 2x4
-// sampling takes the direct path with no resampling allocations.
-enum CellSampler {
-    Direct,
-    Area([Vec<(usize, usize, f32)>; 8]),
-}
 impl CellSampler {
-    fn new(width: usize, height: usize) -> Self {
-        if (width, height) == (2, 4) {
-            return Self::Direct;
-        }
-        let weights = std::array::from_fn(|i| {
-            let left = (i % 2) as f32 * width as f32 / 2.0;
-            let right = (i % 2 + 1) as f32 * width as f32 / 2.0;
-            let top = (i / 2) as f32 * height as f32 / 4.0;
-            let bottom = (i / 2 + 1) as f32 * height as f32 / 4.0;
-            let area = (right - left) * (bottom - top);
-            let mut entries = Vec::new();
-            for y in top.floor() as usize..bottom.ceil() as usize {
-                for x in left.floor() as usize..right.ceil() as usize {
-                    let overlap_x = (right.min(x as f32 + 1.0) - left.max(x as f32)).max(0.0);
-                    let overlap_y = (bottom.min(y as f32 + 1.0) - top.max(y as f32)).max(0.0);
-                    let weight = overlap_x * overlap_y / area;
-                    if weight > 0.0 {
-                        entries.push((x, y, weight));
-                    }
-                }
-            }
-            entries
-        });
-        Self::Area(weights)
-    }
     fn read(&self, frame: &Framebuffer, x: usize, y: usize) -> ([f32; 8], [bool; 8]) {
-        let mut values = [0.0; 8];
-        let mut covered = [false; 8];
-        for i in 0..8 {
-            match self {
-                Self::Direct => {
-                    let index = (y + i / 2) * frame.width() + x + i % 2;
-                    values[i] = frame.brightness()[index];
-                    covered[i] = frame.depth()[index].is_finite();
-                }
-                Self::Area(weights) => {
-                    for &(sx, sy, weight) in &weights[i] {
-                        let index = (y + sy) * frame.width() + x + sx;
-                        values[i] += frame.brightness()[index] * weight;
-                        covered[i] |= frame.depth()[index].is_finite();
-                    }
-                }
-            }
-        }
-        (values, covered)
+        self.sample(|sx, sy| {
+            let index = (y + sy) * frame.width() + x + sx;
+            (frame.brightness()[index], frame.depth()[index].is_finite())
+        })
     }
 }
 

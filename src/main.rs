@@ -5,7 +5,8 @@ use crossterm::{
 };
 use glam::{EulerRot, Quat};
 use limen::{
-    ascii::{self, AsciiOptions, CharGrid, GlyphMode, ToneMap},
+    ascii::{AsciiOptions, AsciiResolver, CharGrid, GlyphMode, ToneMap},
+    font_atlas::{CellSize, FontAtlasConfig, GlyphAtlas},
     geometry::{self, Camera, Scene},
     obj,
     render::{self, Framebuffer, RenderOptions},
@@ -57,6 +58,15 @@ struct Args {
     /// ASCII selection algorithm: brightness or experimental shape matching
     #[arg(long, default_value = "brightness")]
     glyph_mode: GlyphMode,
+    /// TTF/OTF font used to calibrate both glyph algorithms
+    #[arg(long)]
+    font: Option<PathBuf>,
+    /// Font rasterization size in pixels per em (default 16 with --font)
+    #[arg(long, requires = "font", value_parser = parse_font_size)]
+    font_size: Option<f32>,
+    /// Override atlas cell size WxH, dimensions 1 to 512
+    #[arg(long, requires = "font")]
+    font_cell: Option<CellSize>,
     /// Magnification relative to an automatically fitted camera (0.5 to 3)
     #[arg(long, default_value = "1", value_parser = parse_zoom)]
     zoom: f32,
@@ -93,6 +103,9 @@ fn parse_bounded(s: &str, min: f32, max: f32) -> Result<f32, String> {
     } else {
         Err(format!("expected a finite value between {min} and {max}"))
     }
+}
+fn parse_font_size(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 4.0, 128.0)
 }
 fn parse_aspect(s: &str) -> Result<f32, String> {
     parse_bounded(s, 0.05, 5.0)
@@ -131,6 +144,30 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some(ref path) => obj::load_selected(path, &args.objects)
             .map_err(|e| format!("{}: {e}", path.display()))?,
         None => geometry::cube(),
+    };
+    let mut resolver = match args.font {
+        Some(ref path) => AsciiResolver::with_atlas(GlyphAtlas::from_file(
+            path,
+            FontAtlasConfig {
+                size_px: args.font_size.unwrap_or(16.0),
+                cell: args.font_cell,
+            },
+        )?),
+        None => AsciiResolver::default(),
+    };
+    let atlas_status = match resolver.atlas() {
+        Some(atlas) => format!(
+            "font:{}/{}px/{}",
+            atlas
+                .name()
+                .chars()
+                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                .take(20)
+                .collect::<String>(),
+            atlas.size_px(),
+            atlas.cell()
+        ),
+        None => "builtin".to_string(),
     };
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err("interactive terminal required (stdin and stdout must be TTYs)".into());
@@ -216,7 +253,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     mode: settings.mode,
                 },
             );
-            ascii::resolve_with_options(
+            resolver.resolve(
                 &frame,
                 sx,
                 sy,
@@ -229,7 +266,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         if width > 0 && size.rows > 0 {
             let status = format!(
-                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {} | M 1-6 +/- arrows ,. [] 0 Space R Q",
+                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {} {} | M 1-6 +/- arrows ,. [] 0 Space R Q",
                 settings.mode,
                 if paused { " paused" } else { "" },
                 settings.zoom,
@@ -240,6 +277,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 cell_aspect.value,
                 cell_aspect.source,
                 settings.glyph_mode,
+                atlas_status,
             );
             terminal_output.present_with_status(&grid, &status)?;
         }

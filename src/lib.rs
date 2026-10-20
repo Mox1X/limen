@@ -1,7 +1,9 @@
 pub mod ascii;
+pub mod font_atlas;
 pub mod geometry;
 pub mod glyphs;
 pub mod obj;
 pub mod render;
+mod sampling;
 pub mod terminal;
 pub mod view;

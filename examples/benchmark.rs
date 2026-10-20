@@ -2,7 +2,8 @@
 use clap::Parser;
 use glam::{Quat, Vec3};
 use limen::{
-    ascii::{AsciiOptions, CharGrid, GlyphMode, ToneMap, resolve_with_options, resolve_with_tone},
+    ascii::{AsciiOptions, AsciiResolver, CharGrid, GlyphMode, ToneMap, resolve_with_tone},
+    font_atlas::{CellSize, FontAtlasConfig, GlyphAtlas},
     geometry::{Camera, DirectionalLight, Mesh, Scene, cube},
     glyphs::SHAPE_GLYPHS,
     obj,
@@ -31,8 +32,22 @@ struct Args {
     /// Compare brightness and shape on the same fitted scene instead of old/new lighting
     #[arg(long)]
     compare_glyphs: bool,
+    #[arg(long, requires = "compare_glyphs")]
+    font: Option<PathBuf>,
+    #[arg(long, requires = "font", value_parser = parse_font_size)]
+    font_size: Option<f32>,
+    #[arg(long, requires = "font")]
+    font_cell: Option<CellSize>,
 }
 
+fn parse_font_size(value: &str) -> Result<f32, String> {
+    let size: f32 = value.parse().map_err(|_| "expected px/em".to_string())?;
+    if size.is_finite() && (4.0..=128.0).contains(&size) {
+        Ok(size)
+    } else {
+        Err("expected a finite size from 4 to 128 px/em".into())
+    }
+}
 fn scene(mesh: Mesh, before: bool) -> Scene {
     let mut scene = Scene::from_mesh(mesh);
     if before {
@@ -140,6 +155,33 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
+    let build_start = Instant::now();
+    let mut resolver = match args.font {
+        Some(ref path) => AsciiResolver::with_atlas(GlyphAtlas::from_file(
+            path,
+            FontAtlasConfig {
+                size_px: args.font_size.unwrap_or(16.0),
+                cell: args.font_cell,
+            },
+        )?),
+        None => AsciiResolver::default(),
+    };
+    let build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
+    if let Some(atlas) = resolver.atlas() {
+        println!(
+            "atlas: {} {}px/em cell={} baseline={} max_density={:.6}, build {build_ms:.3} ms",
+            atlas.name(),
+            atlas.size_px(),
+            atlas.cell(),
+            atlas.baseline(),
+            atlas.max_density()
+        );
+        if let Some(ref directory) = args.snapshot_dir {
+            atlas.export(directory)?;
+        }
+    } else {
+        println!("atlas: builtin");
+    }
     let (width, height) = (args.columns as usize, args.rows as usize);
     let aspect = width as f32 * 0.5 / height as f32;
     let triangles = mesh.indices.len();
@@ -164,7 +206,7 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
                 &mut frame,
                 RenderOptions::default(),
             );
-            resolve_with_options(&frame, 2, 4, &mut grid, options);
+            resolver.resolve(&frame, 2, 4, &mut grid, options);
             black_box(&grid);
         }
         let total_ms = start.elapsed().as_secs_f64() * 1000.0 / args.frames as f64;
@@ -178,7 +220,7 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
         );
         let start = Instant::now();
         for _ in 0..args.frames {
-            resolve_with_options(black_box(&frame), 2, 4, &mut grid, options);
+            resolver.resolve(black_box(&frame), 2, 4, &mut grid, options);
             black_box(&grid);
         }
         let resolve_ms = start.elapsed().as_secs_f64() * 1000.0 / args.frames as f64;
@@ -197,7 +239,7 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
                     mode: ViewMode::Silhouette,
                 },
             );
-            resolve_with_options(
+            resolver.resolve(
                 &frame,
                 2,
                 4,
@@ -215,7 +257,7 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
     }
     if let Some(ref directory) = args.snapshot_dir {
         let mut report = String::from(
-            "Exact 2x4 synthetic masks, linear tone; columns: label, mean, brightness, shape\n",
+            "Synthetic 2x4 inputs (builtin templates), linear tone; columns: label, mean, brightness, shape\n",
         );
         for (label, mask) in SHAPE_GLYPHS
             .iter()
@@ -233,7 +275,7 @@ fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
             let mut cell = CharGrid::new(1, 1);
             let mut outputs = Vec::new();
             for glyph_mode in [GlyphMode::Brightness, GlyphMode::Shape] {
-                resolve_with_options(
+                resolver.resolve(
                     &frame,
                     2,
                     4,

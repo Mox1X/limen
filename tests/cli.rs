@@ -154,3 +154,59 @@ fn both_glyph_algorithms_accept_all_diagnostic_views() {
         }
     }
 }
+
+#[test]
+fn font_options_validate_before_terminal_setup() {
+    let font = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/fonts/JetBrainsMono-Regular.ttf");
+    for args in [vec!["--font-size", "16"], vec!["--font-cell", "10x22"]] {
+        assert!(!binary().args(args).output().unwrap().status.success());
+    }
+    for (flag, value) in [
+        ("--font-size", "NaN"),
+        ("--font-size", "3"),
+        ("--font-size", "129"),
+        ("--font-cell", "0x10"),
+        ("--font-cell", "513x10"),
+        ("--font-cell", "10"),
+        ("--font-cell", "10xNaN"),
+    ] {
+        let output = binary()
+            .arg("--font")
+            .arg(&font)
+            .args([flag, value])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b));
+    }
+    for glyph in ["brightness", "shape"] {
+        let output = binary()
+            .arg("--font")
+            .arg(&font)
+            .args([
+                "--glyph-mode",
+                glyph,
+                "--font-size",
+                "16",
+                "--font-cell",
+                "10x22",
+            ])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+    }
+    let output = binary()
+        .args(["--font", "/missing/font.ttf"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("/missing/font.ttf"));
+    assert!(!output.stderr.contains(&0x1b));
+    let output = binary()
+        .arg("--font")
+        .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot parse font"));
+    assert!(!output.stderr.contains(&0x1b));
+}
