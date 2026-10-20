@@ -346,6 +346,42 @@ mod tests {
         assert_eq!(a.brightness, b.brightness);
     }
     #[test]
+    fn overlapping_surfaces_keep_independent_depth_in_one_character() {
+        // Both triangles occupy the same 2x4 character, overlapping at the top.
+        // A single depth per character would incorrectly hide the far left side.
+        let near = [
+            vertex(0., 0., 0.2, Vec3::Z),
+            vertex(2., 0., 0.2, Vec3::Z),
+            vertex(2., 4., 0.2, Vec3::Z),
+        ];
+        let far = [
+            vertex(0., 0., 0.7, -Vec3::Z),
+            vertex(2., 0., 0.7, -Vec3::Z),
+            vertex(0., 4., 0.7, -Vec3::Z),
+        ];
+        let light = DirectionalLight {
+            toward_light: Vec3::Z,
+            ambient: 0.1,
+            diffuse: 0.9,
+        };
+        let mut a = Framebuffer::new(2, 4);
+        let mut b = Framebuffer::new(2, 4);
+        for triangle in [near, far] {
+            rasterize(triangle, &light, &mut a, ViewMode::Shaded);
+        }
+        for triangle in [far, near] {
+            rasterize(triangle, &light, &mut b, ViewMode::Shaded);
+        }
+        assert_eq!(a.depth, b.depth);
+        assert_eq!(a.brightness, b.brightness);
+        assert_eq!(
+            a.depth,
+            [0.2, 0.2, 0.7, 0.2, 0.7, 0.2, f32::INFINITY, f32::INFINITY]
+        );
+        assert_eq!(a.brightness, [1.0, 1.0, 0.1, 1.0, 0.1, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
     fn degenerate_triangle_is_ignored() {
         let mut frame = Framebuffer::new(4, 4);
         rasterize(

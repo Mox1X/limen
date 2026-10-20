@@ -2,8 +2,9 @@
 use clap::Parser;
 use glam::{Quat, Vec3};
 use limen::{
-    ascii::{CharGrid, ToneMap, resolve_with_tone},
+    ascii::{AsciiOptions, CharGrid, GlyphMode, ToneMap, resolve_with_options, resolve_with_tone},
     geometry::{Camera, DirectionalLight, Mesh, Scene, cube},
+    glyphs::SHAPE_GLYPHS,
     obj,
     render::{Framebuffer, RenderOptions, render_with_options},
     view::ViewMode,
@@ -27,6 +28,9 @@ struct Args {
     /// Write deterministic before/after and diagnostic snapshots of the OBJ
     #[arg(long)]
     snapshot_dir: Option<PathBuf>,
+    /// Compare brightness and shape on the same fitted scene instead of old/new lighting
+    #[arg(long)]
+    compare_glyphs: bool,
 }
 
 fn scene(mesh: Mesh, before: bool) -> Scene {
@@ -53,10 +57,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !args.rotate_x.is_finite() {
         return Err("rotation must be finite".into());
     }
-    let path = args.model.unwrap_or_else(|| {
+    let path = args.model.clone().unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/smooth.obj")
     });
     let obj = obj::load_selected(&path, &args.objects)?;
+    if args.compare_glyphs {
+        return compare_glyphs(&args, obj);
+    }
     let (width, height) = (args.columns as usize, args.rows as usize);
     let aspect = width as f32 * 0.5 / height as f32;
     let orientation = Quat::from_rotation_x(args.rotate_x.to_radians());
@@ -128,6 +135,124 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn compare_glyphs(args: &Args, mesh: Mesh) -> Result<(), Box<dyn Error>> {
+    let (width, height) = (args.columns as usize, args.rows as usize);
+    let aspect = width as f32 * 0.5 / height as f32;
+    let triangles = mesh.indices.len();
+    let camera = Camera::fitted(mesh.bounding_sphere().unwrap(), aspect, 1.0);
+    let mut scene = Scene::from_mesh(mesh);
+    let orientation = Quat::from_rotation_x(args.rotate_x.to_radians());
+    let mut frame = Framebuffer::new(width * 2, height * 4);
+    let mut grid = CharGrid::new(width, height);
+    for glyph_mode in [GlyphMode::Brightness, GlyphMode::Shape] {
+        let options = AsciiOptions {
+            glyph_mode,
+            tone: ToneMap::default(),
+        };
+        let start = Instant::now();
+        for i in 0..args.frames {
+            scene.instances[0].transform.rotation =
+                Quat::from_rotation_y(i as f32 * 0.01) * orientation;
+            render_with_options(
+                &scene,
+                &camera,
+                aspect,
+                &mut frame,
+                RenderOptions::default(),
+            );
+            resolve_with_options(&frame, 2, 4, &mut grid, options);
+            black_box(&grid);
+        }
+        let total_ms = start.elapsed().as_secs_f64() * 1000.0 / args.frames as f64;
+        scene.instances[0].transform.rotation = orientation;
+        render_with_options(
+            &scene,
+            &camera,
+            aspect,
+            &mut frame,
+            RenderOptions::default(),
+        );
+        let start = Instant::now();
+        for _ in 0..args.frames {
+            resolve_with_options(black_box(&frame), 2, 4, &mut grid, options);
+            black_box(&grid);
+        }
+        let resolve_ms = start.elapsed().as_secs_f64() * 1000.0 / args.frames as f64;
+        println!(
+            "{glyph_mode}: {triangles} triangles, {width}x{height} chars, 2x4 samples, total {total_ms:.3} ms/frame, resolve-only {resolve_ms:.3} ms/frame, excluding terminal I/O"
+        );
+        if let Some(ref directory) = args.snapshot_dir {
+            std::fs::create_dir_all(directory)?;
+            std::fs::write(directory.join(format!("{glyph_mode}.txt")), text(&grid))?;
+            render_with_options(
+                &scene,
+                &camera,
+                aspect,
+                &mut frame,
+                RenderOptions {
+                    mode: ViewMode::Silhouette,
+                },
+            );
+            resolve_with_options(
+                &frame,
+                2,
+                4,
+                &mut grid,
+                AsciiOptions {
+                    glyph_mode,
+                    tone: ToneMap::LINEAR,
+                },
+            );
+            std::fs::write(
+                directory.join(format!("{glyph_mode}-silhouette.txt")),
+                text(&grid),
+            )?;
+        }
+    }
+    if let Some(ref directory) = args.snapshot_dir {
+        let mut report = String::from(
+            "Exact 2x4 synthetic masks, linear tone; columns: label, mean, brightness, shape\n",
+        );
+        for (label, mask) in SHAPE_GLYPHS
+            .iter()
+            .map(|g| (format!("glyph {}", g.symbol as char), g.mask))
+            .chain([
+                ("uniform black".into(), [0.0; 8]),
+                ("uniform gray".into(), [0.5; 8]),
+                ("uniform white".into(), [1.0; 8]),
+            ])
+        {
+            let mut frame = Framebuffer::new(2, 4);
+            for (i, value) in mask.into_iter().enumerate() {
+                frame.write(i % 2, i / 2, 0.5, value);
+            }
+            let mut cell = CharGrid::new(1, 1);
+            let mut outputs = Vec::new();
+            for glyph_mode in [GlyphMode::Brightness, GlyphMode::Shape] {
+                resolve_with_options(
+                    &frame,
+                    2,
+                    4,
+                    &mut cell,
+                    AsciiOptions {
+                        glyph_mode,
+                        tone: ToneMap::LINEAR,
+                    },
+                );
+                outputs.push(cell.get(0, 0).unwrap() as char);
+            }
+            report.push_str(&format!(
+                "{label:14} mean={:.3} brightness='{}' shape='{}' mask={mask:?}\n",
+                mask.iter().sum::<f32>() / 8.0,
+                outputs[0],
+                outputs[1]
+            ));
+        }
+        std::fs::write(directory.join("synthetic.txt"), report)?;
     }
     Ok(())
 }

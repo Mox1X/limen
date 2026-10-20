@@ -1,5 +1,5 @@
 //! Display settings shared by the terminal application and headless tools.
-use crate::ascii::ToneMap;
+use crate::ascii::{GlyphMode, ToneMap};
 use crate::geometry::DirectionalLight;
 use std::{fmt, str::FromStr};
 
@@ -61,6 +61,7 @@ impl FromStr for ViewMode {
 #[derive(Debug, Clone, Copy)]
 pub struct ViewSettings {
     pub mode: ViewMode,
+    pub glyph_mode: GlyphMode,
     pub zoom: f32,
     pub light_azimuth: f32,
     pub light_elevation: f32,
@@ -71,6 +72,7 @@ impl Default for ViewSettings {
     fn default() -> Self {
         Self {
             mode: ViewMode::Shaded,
+            glyph_mode: GlyphMode::Brightness,
             zoom: 1.0,
             light_azimuth: -55.0,
             light_elevation: 35.0,

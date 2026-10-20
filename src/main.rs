@@ -5,7 +5,7 @@ use crossterm::{
 };
 use glam::{EulerRot, Quat};
 use limen::{
-    ascii::{self, CharGrid, ToneMap},
+    ascii::{self, AsciiOptions, CharGrid, GlyphMode, ToneMap},
     geometry::{self, Camera, Scene},
     obj,
     render::{self, Framebuffer, RenderOptions},
@@ -54,6 +54,9 @@ struct Args {
     /// Initial display mode: shaded, depth, silhouette, normal-x, normal-y, normal-z
     #[arg(long, default_value = "shaded")]
     view: ViewMode,
+    /// ASCII selection algorithm: brightness or experimental shape matching
+    #[arg(long, default_value = "brightness")]
+    glyph_mode: GlyphMode,
     /// Magnification relative to an automatically fitted camera (0.5 to 3)
     #[arg(long, default_value = "1", value_parser = parse_zoom)]
     zoom: f32,
@@ -136,6 +139,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut scene = Scene::from_mesh(mesh);
     let initial_settings = ViewSettings {
         mode: args.view,
+        glyph_mode: args.glyph_mode,
         zoom: args.zoom,
         light_azimuth: args.light_azimuth,
         light_elevation: args.light_elevation,
@@ -212,11 +216,20 @@ fn run() -> Result<(), Box<dyn Error>> {
                     mode: settings.mode,
                 },
             );
-            ascii::resolve_with_tone(&frame, sx, sy, &mut grid, settings.effective_tone());
+            ascii::resolve_with_options(
+                &frame,
+                sx,
+                sy,
+                &mut grid,
+                AsciiOptions {
+                    glyph_mode: settings.glyph_mode,
+                    tone: settings.effective_tone(),
+                },
+            );
         }
         if width > 0 && size.rows > 0 {
             let status = format!(
-                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) | 1-6 +/- arrows ,. [] 0 Space R Q",
+                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {} | M 1-6 +/- arrows ,. [] 0 Space R Q",
                 settings.mode,
                 if paused { " paused" } else { "" },
                 settings.zoom,
@@ -226,6 +239,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 settings.light_elevation,
                 cell_aspect.value,
                 cell_aspect.source,
+                settings.glyph_mode,
             );
             terminal_output.present_with_status(&grid, &status)?;
         }
@@ -263,6 +277,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                     KeyCode::Char('[') => settings.adjust(Adjustment::Gamma(-0.1)),
                     KeyCode::Char(']') => settings.adjust(Adjustment::Gamma(0.1)),
                     KeyCode::Char('0') => settings = initial_settings,
+                    KeyCode::Char('m' | 'M') => {
+                        settings.glyph_mode = match settings.glyph_mode {
+                            GlyphMode::Brightness => GlyphMode::Shape,
+                            GlyphMode::Shape => GlyphMode::Brightness,
+                        }
+                    }
                     _ => {}
                 }
             }

@@ -85,9 +85,20 @@ with Viewer() as viewer:
     viewer.collect()
     paused = viewer.frames()
     assert len(paused) >= 2 and paused[0] == paused[-1], "pause did not freeze"
+    viewer.send(b"m")
+    shape_paused = [frame for frame in viewer.frames() if b"shape" in frame[-1]]
+    assert len(shape_paused) >= 2, "no stable shape frames"
+    assert shape_paused[0][:-1] == shape_paused[-1][:-1], "shape matcher changed a paused frame"
+    viewer.send(b"M")
+    restored = viewer.last()
+    assert b"brightness" in restored[-1] and restored[:-1] == paused[-1][:-1]
     for number, mode in enumerate(MODES, 1):
         viewer.send(str(number).encode())
         assert viewer.last()[-1].startswith(mode + b" paused"), mode
+        viewer.send(b"m")
+        toggled = viewer.last()
+        assert toggled[-1].startswith(mode + b" paused")
+        assert (b"shape" if number % 2 else b"brightness") in toggled[-1]
     viewer.send(b"2")
     depth = viewer.last()
     viewer.send(b".[")
@@ -109,27 +120,35 @@ with Viewer() as viewer:
     viewer.send(b" ")
     resumed = viewer.frames(0.4)
     assert len(set(frame[:-1] for frame in resumed)) > 1, "animation did not resume"
+    viewer.send(b"m")
     viewer.resize(80, 24, 800, 600)
     resized = viewer.last()
+    assert b"shape" in resized[-1]
     assert b"A0.400(auto)" in resized[-1], "resize aspect detection failed"
     viewer.resize(80, 24, 0, 0)
     assert b"A0.500(fallback)" in viewer.last()[-1]
     viewer.resize(80, 1, 800, 20)
     assert viewer.last()[0].startswith(b"shaded"), "single-row terminal failed"
     viewer.quit(b"q")
-print("OK: pause, all modes, debug tone bypass, zoom, light, reset, resume, resize, auto/fallback aspect, one-row terminal, Q cleanup")
+print("OK: pause, deterministic shape matching, M toggles all views, debug tone bypass, zoom, light, reset, resume, resize, auto/fallback aspect, one-row terminal, Q cleanup")
 
-with Viewer("--cell-aspect", "0.6", "--view", "silhouette", "--contrast", "0.8") as viewer:
+with Viewer("--cell-aspect", "0.6", "--view", "silhouette", "--contrast", "0.8", "--glyph-mode", "shape") as viewer:
     assert b"A0.600(manual)" in viewer.last()[-1]
     viewer.resize(80, 24, 800, 600)
     assert b"A0.600(manual)" in viewer.last()[-1]
+    assert b"shape" in viewer.last()[-1]
+    viewer.send(b"m")
+    assert b"brightness" in viewer.last()[-1]
     viewer.send(b"1.0")
     reset = viewer.last()
-    assert reset[-1].startswith(b"silhouette") and b"c0.80" in reset[-1], "reset did not restore CLI settings"
+    assert reset[-1].startswith(b"silhouette") and b"c0.80" in reset[-1] and b"shape" in reset[-1], "reset did not restore CLI settings"
     viewer.quit(b"\x1b")
-print("OK: manual aspect precedence, CLI reset, Esc cleanup")
+print("OK: manual aspect precedence, CLI glyph mode and reset, Esc cleanup")
 
-with Viewer() as viewer:
-    viewer.last()
+with Viewer("--glyph-mode", "shape", "--samples-x", "3", "--samples-y", "5") as viewer:
+    sampled = viewer.last()
+    assert b"shape" in sampled[-1] and any(row.strip() for row in sampled[:-1])
+    viewer.send(b"m")
+    assert b"brightness" in viewer.last()[-1]
     viewer.quit(b"\x03")
-print("OK: Ctrl+C cleanup")
+print("OK: fractional 3x5 shape resampling, toggle and Ctrl+C cleanup")

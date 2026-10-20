@@ -28,6 +28,7 @@ fn invalid_sampling_fps_and_aspect_are_rejected() {
         ["--light-elevation", "91"],
         ["--light-azimuth", "NaN"],
         ["--view", "rgb"],
+        ["--glyph-mode", "unicode"],
     ] {
         let output = binary().args(args).output().unwrap();
         assert!(!output.status.success());
@@ -129,5 +130,27 @@ fn display_options_accept_valid_modes_angles_and_bounds() {
             .unwrap();
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+    }
+}
+
+#[test]
+fn both_glyph_algorithms_accept_all_diagnostic_views() {
+    for glyph in ["brightness", "shape"] {
+        for view in [
+            "shaded",
+            "depth",
+            "silhouette",
+            "normal-x",
+            "normal-y",
+            "normal-z",
+        ] {
+            let output = binary()
+                .args(["--glyph-mode", glyph, "--view", view])
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("interactive terminal required")
+            );
+        }
     }
 }
