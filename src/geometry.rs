@@ -38,6 +38,7 @@ pub struct Instance {
     pub transform: Transform,
 }
 
+#[derive(Debug, Clone)]
 pub struct Camera {
     pub eye: Vec3,
     pub target: Vec3,
@@ -58,11 +59,55 @@ impl Default for Camera {
         }
     }
 }
+#[derive(Debug, Clone, Copy)]
+pub struct BoundingSphere {
+    pub center: Vec3,
+    pub radius: f32,
+}
+impl Mesh {
+    pub fn bounding_sphere(&self) -> Option<BoundingSphere> {
+        if self.vertices.is_empty() {
+            return None;
+        }
+        let min = self
+            .vertices
+            .iter()
+            .fold(Vec3::splat(f32::INFINITY), |a, v| a.min(v.position));
+        let max = self
+            .vertices
+            .iter()
+            .fold(Vec3::splat(f32::NEG_INFINITY), |a, v| a.max(v.position));
+        let center = min * 0.5 + max * 0.5;
+        let radius = self
+            .vertices
+            .iter()
+            .map(|v| v.position.distance(center))
+            .fold(0.0_f32, f32::max);
+        Some(BoundingSphere { center, radius })
+    }
+}
 impl Camera {
+    /// Fits the whole bounding sphere with 10% margin on the limiting axis.
+    /// Zoom then changes the field of view, leaving the eye outside the mesh.
+    pub fn fitted(bounds: BoundingSphere, aspect: f32, zoom: f32) -> Self {
+        let mut camera = Self::default();
+        let half_y = camera.fov_y * 0.5;
+        let half_x = (half_y.tan() * aspect).atan();
+        let angular_radius = (half_y.min(half_x).tan() * 0.9).atan();
+        let distance = bounds.radius.max(1e-4) / angular_radius.sin();
+        camera.target = bounds.center;
+        camera.eye = bounds.center + Vec3::Z * distance;
+        camera.near = camera.near.min((distance - bounds.radius) * 0.5);
+        camera.far = camera.far.max(distance + bounds.radius * 2.0);
+        camera.fov_y = 2.0 * (half_y.tan() / zoom).atan();
+        camera
+    }
+    pub fn view_matrix(&self) -> Mat4 {
+        Mat4::look_at_rh(self.eye, self.target, self.up)
+    }
     /// Right-handed, with normalized depth in [0, 1].
     pub fn view_projection(&self, aspect: f32) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far)
-            * Mat4::look_at_rh(self.eye, self.target, self.up)
+        Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far) * self.view_matrix()
     }
 }
 
@@ -74,14 +119,23 @@ pub struct DirectionalLight {
 }
 impl Default for DirectionalLight {
     fn default() -> Self {
-        Self {
-            toward_light: Vec3::new(-0.5, 0.8, 1.0).normalize(),
-            ambient: 0.12,
-            diffuse: 0.88,
-        }
+        Self::from_angles(-55.0, 35.0, 0.06)
     }
 }
 impl DirectionalLight {
+    /// Angles in degrees: azimuth 0 is +Z, +90 is +X; positive elevation is +Y.
+    pub fn from_angles(azimuth: f32, elevation: f32, ambient: f32) -> Self {
+        let (azimuth, elevation) = (azimuth.to_radians(), elevation.to_radians());
+        Self {
+            toward_light: Vec3::new(
+                azimuth.sin() * elevation.cos(),
+                elevation.sin(),
+                azimuth.cos() * elevation.cos(),
+            ),
+            ambient,
+            diffuse: 1.0 - ambient,
+        }
+    }
     pub fn intensity(&self, normal: Vec3) -> f32 {
         (self.ambient
             + self.diffuse

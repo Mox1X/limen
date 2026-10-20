@@ -19,6 +19,15 @@ fn invalid_sampling_fps_and_aspect_are_rejected() {
         ["--rotate-x", "NaN"],
         ["--rotate-y", "inf"],
         ["--rotate-z", "-inf"],
+        ["--zoom", "0.4"],
+        ["--zoom", "3.1"],
+        ["--contrast", "0"],
+        ["--gamma", "NaN"],
+        ["--gamma", "4.1"],
+        ["--ambient", "1.1"],
+        ["--light-elevation", "91"],
+        ["--light-azimuth", "NaN"],
+        ["--view", "rgb"],
     ] {
         let output = binary().args(args).output().unwrap();
         assert!(!output.status.success());
@@ -87,4 +96,38 @@ fn finite_negative_initial_rotations_are_accepted() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+}
+
+#[test]
+fn display_options_accept_valid_modes_angles_and_bounds() {
+    for mode in [
+        "shaded",
+        "depth",
+        "silhouette",
+        "normal-x",
+        "normal-y",
+        "normal-z",
+    ] {
+        let output = binary()
+            .args([
+                "--view",
+                mode,
+                "--light-azimuth",
+                "-55",
+                "--light-elevation",
+                "-35",
+                "--zoom",
+                "3",
+                "--contrast",
+                "0.25",
+                "--gamma",
+                "4",
+                "--ambient",
+                "0",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+    }
 }

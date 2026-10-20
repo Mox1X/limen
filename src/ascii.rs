@@ -2,6 +2,33 @@ use crate::render::Framebuffer;
 
 pub const RAMP: &[u8] = b" .:-=+*#%@";
 
+/// Applied to the mean character luminance, before ASCII quantization.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToneMap {
+    pub contrast: f32,
+    /// Exponent: values greater than one darken midtones.
+    pub gamma: f32,
+}
+impl ToneMap {
+    pub const LINEAR: Self = Self {
+        contrast: 1.0,
+        gamma: 1.0,
+    };
+    pub fn apply(self, luminance: f32) -> f32 {
+        (self.contrast * (luminance - 0.5) + 0.5)
+            .clamp(0.0, 1.0)
+            .powf(self.gamma)
+    }
+}
+impl Default for ToneMap {
+    fn default() -> Self {
+        Self {
+            contrast: 1.2,
+            gamma: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CharGrid {
     width: usize,
@@ -51,6 +78,16 @@ pub fn brightness_char(value: f32) -> u8 {
 
 /// Background samples participate in the average, smoothing the silhouette too.
 pub fn resolve(frame: &Framebuffer, samples_x: usize, samples_y: usize, grid: &mut CharGrid) {
+    resolve_with_tone(frame, samples_x, samples_y, grid, ToneMap::LINEAR);
+}
+
+pub fn resolve_with_tone(
+    frame: &Framebuffer,
+    samples_x: usize,
+    samples_y: usize,
+    grid: &mut CharGrid,
+    tone: ToneMap,
+) {
     assert!(samples_x > 0 && samples_y > 0);
     assert_eq!(frame.width(), grid.width() * samples_x);
     assert_eq!(frame.height(), grid.height() * samples_y);
@@ -58,13 +95,23 @@ pub fn resolve(frame: &Framebuffer, samples_x: usize, samples_y: usize, grid: &m
     for y in 0..grid.height() {
         for x in 0..grid.width() {
             let mut sum = 0.0;
+            let mut covered = false;
             for sy in 0..samples_y {
                 for sx in 0..samples_x {
-                    sum += frame.brightness()
-                        [(y * samples_y + sy) * frame.width() + x * samples_x + sx];
+                    let index = (y * samples_y + sy) * frame.width() + x * samples_x + sx;
+                    sum += frame.brightness()[index];
+                    covered |= frame.depth()[index].is_finite();
                 }
             }
-            grid.set(x, y, brightness_char(sum / divisor));
+            grid.set(
+                x,
+                y,
+                if covered {
+                    brightness_char(tone.apply(sum / divisor))
+                } else {
+                    b' '
+                },
+            );
         }
     }
 }

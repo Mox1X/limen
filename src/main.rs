@@ -5,11 +5,12 @@ use crossterm::{
 };
 use glam::{EulerRot, Quat};
 use limen::{
-    ascii::{self, CharGrid},
+    ascii::{self, CharGrid, ToneMap},
     geometry::{self, Camera, Scene},
     obj,
-    render::{self, Framebuffer},
+    render::{self, Framebuffer, RenderOptions},
     terminal::Terminal,
+    view::{Adjustment, CellAspect, ViewMode, ViewSettings},
 };
 use std::{
     error::Error,
@@ -48,8 +49,29 @@ struct Args {
     #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=16))]
     samples_y: u8,
     /// Character width divided by character height
-    #[arg(long, default_value = "0.5", value_parser = parse_aspect)]
-    cell_aspect: f32,
+    #[arg(long, value_parser = parse_aspect)]
+    cell_aspect: Option<f32>,
+    /// Initial display mode: shaded, depth, silhouette, normal-x, normal-y, normal-z
+    #[arg(long, default_value = "shaded")]
+    view: ViewMode,
+    /// Magnification relative to an automatically fitted camera (0.5 to 3)
+    #[arg(long, default_value = "1", value_parser = parse_zoom)]
+    zoom: f32,
+    /// Light azimuth in degrees: 0 toward the camera, +90 toward +X
+    #[arg(long, default_value = "-55", allow_hyphen_values = true, value_parser = parse_degrees)]
+    light_azimuth: f32,
+    /// Light elevation in degrees (-90 to 90)
+    #[arg(long, default_value = "35", allow_hyphen_values = true, value_parser = parse_elevation)]
+    light_elevation: f32,
+    /// Ambient light contribution (0 to 1)
+    #[arg(long, default_value = "0.06", value_parser = parse_ambient)]
+    ambient: f32,
+    /// Luminance contrast around 0.5 (0.25 to 3)
+    #[arg(long, default_value = "1.2", value_parser = parse_contrast)]
+    contrast: f32,
+    /// Luminance exponent, greater than 1 darkens midtones (0.25 to 4)
+    #[arg(long, default_value = "1", value_parser = parse_gamma)]
+    gamma: f32,
 }
 fn parse_degrees(s: &str) -> Result<f32, String> {
     let value: f32 = s
@@ -61,13 +83,31 @@ fn parse_degrees(s: &str) -> Result<f32, String> {
         Err("expected a finite angle in degrees".into())
     }
 }
-fn parse_aspect(s: &str) -> Result<f32, String> {
+fn parse_bounded(s: &str, min: f32, max: f32) -> Result<f32, String> {
     let value: f32 = s.parse().map_err(|_| "expected a number".to_string())?;
-    if value.is_finite() && (0.05..=5.0).contains(&value) {
+    if value.is_finite() && (min..=max).contains(&value) {
         Ok(value)
     } else {
-        Err("expected a finite value between 0.05 and 5".into())
+        Err(format!("expected a finite value between {min} and {max}"))
     }
+}
+fn parse_aspect(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.05, 5.0)
+}
+fn parse_zoom(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.5, 3.0)
+}
+fn parse_elevation(s: &str) -> Result<f32, String> {
+    parse_bounded(s, -90.0, 90.0)
+}
+fn parse_ambient(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.0, 1.0)
+}
+fn parse_contrast(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.25, 3.0)
+}
+fn parse_gamma(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.25, 4.0)
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
@@ -92,8 +132,20 @@ fn run() -> Result<(), Box<dyn Error>> {
     if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
         return Err("interactive terminal required (stdin and stdout must be TTYs)".into());
     }
+    let bounds = mesh.bounding_sphere().ok_or("model contains no vertices")?;
     let mut scene = Scene::from_mesh(mesh);
-    let camera = Camera::default();
+    let initial_settings = ViewSettings {
+        mode: args.view,
+        zoom: args.zoom,
+        light_azimuth: args.light_azimuth,
+        light_elevation: args.light_elevation,
+        ambient: args.ambient,
+        tone: ToneMap {
+            contrast: args.contrast,
+            gamma: args.gamma,
+        },
+    };
+    let mut settings = initial_settings;
     let mut terminal_output = Terminal::enter()?;
     let mut grid = CharGrid::new(0, 0);
     let mut frame = Framebuffer::new(0, 0);
@@ -117,8 +169,23 @@ fn run() -> Result<(), Box<dyn Error>> {
             angle = (angle + dt * 6.0_f32.to_radians()) % std::f32::consts::TAU;
         }
         scene.instances[0].transform.rotation = Quat::from_rotation_y(angle) * orientation;
-        let (columns, rows) = terminal::size()?;
-        let (width, height) = (columns as usize, rows as usize);
+        // Query pixels too: font changes can alter the cell ratio independently of columns.
+        let size = terminal::window_size().or_else(|_| {
+            terminal::size().map(|(columns, rows)| terminal::WindowSize {
+                columns,
+                rows,
+                width: 0,
+                height: 0,
+            })
+        })?;
+        let cell_aspect = CellAspect::detect(
+            args.cell_aspect,
+            size.columns,
+            size.rows,
+            size.width,
+            size.height,
+        );
+        let (width, height) = (size.columns as usize, size.rows.saturating_sub(1) as usize);
         if grid.width() != width || grid.height() != height {
             let samples = width
                 .checked_mul(sx)
@@ -133,14 +200,34 @@ fn run() -> Result<(), Box<dyn Error>> {
             frame = Framebuffer::new(width * sx, height * sy);
         }
         if width > 0 && height > 0 {
-            render::render(
+            let aspect = width as f32 * cell_aspect.value / height as f32;
+            let camera = Camera::fitted(bounds, aspect, settings.zoom);
+            scene.light = settings.light();
+            render::render_with_options(
                 &scene,
                 &camera,
-                width as f32 * args.cell_aspect / height as f32,
+                aspect,
                 &mut frame,
+                RenderOptions {
+                    mode: settings.mode,
+                },
             );
-            ascii::resolve(&frame, sx, sy, &mut grid);
-            terminal_output.present(&grid)?;
+            ascii::resolve_with_tone(&frame, sx, sy, &mut grid, settings.effective_tone());
+        }
+        if width > 0 && size.rows > 0 {
+            let status = format!(
+                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) | 1-6 +/- arrows ,. [] 0 Space R Q",
+                settings.mode,
+                if paused { " paused" } else { "" },
+                settings.zoom,
+                settings.tone.contrast,
+                settings.tone.gamma,
+                settings.light_azimuth,
+                settings.light_elevation,
+                cell_aspect.value,
+                cell_aspect.source,
+            );
+            terminal_output.present_with_status(&grid, &status)?;
         }
         // Poll until the frame deadline, so input remains responsive while idle.
         let deadline = start + frame_time;
@@ -160,6 +247,22 @@ fn run() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char(' ') if key.kind == KeyEventKind::Press => paused = !paused,
                     KeyCode::Char('r' | 'R') => angle = 0.0,
+                    KeyCode::Char('1'..='6') => {
+                        if let KeyCode::Char(number) = key.code {
+                            settings.mode = ViewMode::ALL[(number as u8 - b'1') as usize];
+                        }
+                    }
+                    KeyCode::Char('+' | '=') => settings.adjust(Adjustment::Zoom(1.1)),
+                    KeyCode::Char('-') => settings.adjust(Adjustment::Zoom(1.0 / 1.1)),
+                    KeyCode::Left => settings.adjust(Adjustment::Azimuth(-5.0)),
+                    KeyCode::Right => settings.adjust(Adjustment::Azimuth(5.0)),
+                    KeyCode::Up => settings.adjust(Adjustment::Elevation(5.0)),
+                    KeyCode::Down => settings.adjust(Adjustment::Elevation(-5.0)),
+                    KeyCode::Char(',') => settings.adjust(Adjustment::Contrast(-0.1)),
+                    KeyCode::Char('.') => settings.adjust(Adjustment::Contrast(0.1)),
+                    KeyCode::Char('[') => settings.adjust(Adjustment::Gamma(-0.1)),
+                    KeyCode::Char(']') => settings.adjust(Adjustment::Gamma(0.1)),
+                    KeyCode::Char('0') => settings = initial_settings,
                     _ => {}
                 }
             }

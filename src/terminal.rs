@@ -37,10 +37,27 @@ impl Terminal {
         Ok(terminal)
     }
     pub fn present(&mut self, grid: &CharGrid) -> io::Result<()> {
+        self.present_inner(grid, None)
+    }
+    pub fn present_with_status(&mut self, grid: &CharGrid, status: &str) -> io::Result<()> {
+        self.present_inner(grid, Some(status))
+    }
+    fn present_inner(&mut self, grid: &CharGrid, status: Option<&str>) -> io::Result<()> {
         self.buffer.clear();
         for (y, row) in grid.rows().enumerate() {
             queue!(self.buffer, MoveTo(0, y as u16))?;
             self.buffer.extend_from_slice(row);
+        }
+        if let Some(status) = status {
+            queue!(self.buffer, MoveTo(0, grid.height() as u16))?;
+            let start = self.buffer.len();
+            self.buffer.extend(
+                status
+                    .bytes()
+                    .filter(|c| (b' '..=b'~').contains(c))
+                    .take(grid.width()),
+            );
+            self.buffer.resize(start + grid.width(), b' ');
         }
         self.output.write_all(&self.buffer)?;
         self.output.flush()

@@ -3,3 +3,4 @@ pub mod geometry;
 pub mod obj;
 pub mod render;
 pub mod terminal;
+pub mod view;

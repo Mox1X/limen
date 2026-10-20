@@ -1,0 +1,2 @@
+# Framebuffer snapshots preserve the full viewport, including empty bottom rows.
+docs/readability/*.txt whitespace=-blank-at-eof
