@@ -1,0 +1,12 @@
+[package]
+name = "limen"
+version = "0.1.0"
+edition = "2024"
+description = "A CPU 3D renderer for monochrome ASCII terminals"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+glam = "0.30"
+tobj = "4"
