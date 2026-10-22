@@ -65,6 +65,9 @@ pub struct ViewSettings {
     pub palette: GlyphPalette,
     pub complexity_penalty: f32,
     pub stability: f32,
+    /// Rotation about world Y, in degrees per second.
+    pub rotation_speed: f32,
+    pub show_status: bool,
     pub zoom: f32,
     pub light_azimuth: f32,
     pub light_elevation: f32,
@@ -79,6 +82,8 @@ impl Default for ViewSettings {
             palette: GlyphPalette::Structural,
             complexity_penalty: 0.01,
             stability: 0.005,
+            rotation_speed: 6.0,
+            show_status: true,
             zoom: 1.0,
             light_azimuth: -55.0,
             light_elevation: 35.0,
@@ -111,6 +116,9 @@ impl ViewSettings {
     /// Terminal-independent actions also make headless experiments reproducible.
     pub fn adjust(&mut self, adjustment: Adjustment) {
         match adjustment {
+            Adjustment::RotationSpeed(delta) => {
+                self.rotation_speed = (self.rotation_speed + delta).clamp(0.0, 360.0)
+            }
             Adjustment::Zoom(factor) => self.zoom = (self.zoom * factor).clamp(0.5, 3.0),
             Adjustment::Azimuth(degrees) => {
                 self.light_azimuth =
@@ -131,6 +139,7 @@ impl ViewSettings {
 
 #[derive(Clone, Copy)]
 pub enum Adjustment {
+    RotationSpeed(f32),
     Zoom(f32),
     Azimuth(f32),
     Elevation(f32),
@@ -192,6 +201,18 @@ impl CellAspect {
 mod tests {
     use super::*;
     use glam::Vec3;
+    #[test]
+    fn rotation_speed_accepts_fractional_steps_and_clamps_to_safe_bounds() {
+        let mut settings = ViewSettings::default();
+        settings.adjust(Adjustment::RotationSpeed(-0.5));
+        assert_eq!(settings.rotation_speed, 5.5);
+        settings.adjust(Adjustment::RotationSpeed(1000.0));
+        assert_eq!(settings.rotation_speed, 360.0);
+        settings.adjust(Adjustment::RotationSpeed(-1000.0));
+        assert_eq!(settings.rotation_speed, 0.0);
+        settings.adjust(Adjustment::RotationSpeed(0.25));
+        assert_eq!(settings.rotation_speed, 0.25);
+    }
     #[test]
     fn aspect_detection_precedence_and_resize() {
         let aspect = CellAspect::detect(None, 120, 40, 1200, 800);

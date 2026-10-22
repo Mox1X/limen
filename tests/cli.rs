@@ -275,3 +275,25 @@ fn hand_composition_options_validate_before_terminal_setup() {
     assert!(!output.status.success());
     assert!(!String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
 }
+
+#[test]
+fn rotation_speed_and_status_flags_validate_without_a_terminal() {
+    for value in ["NaN", "inf", "-inf", "-0.1", "360.1"] {
+        let output = binary()
+            .args(["--rotation-speed", value, "--hide-status"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+        assert!(!output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b));
+    }
+    for value in ["0", "0.25", "6", "360"] {
+        let output = binary()
+            .args(["--rotation-speed", value, "--hide-status"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+        assert!(output.stdout.is_empty());
+    }
+}

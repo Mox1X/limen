@@ -128,7 +128,7 @@ with Viewer() as viewer:
     assert b"L-60/40" in viewer.last()[-1], "light arrows failed"
     viewer.send(b"0")
     reset = viewer.last()
-    assert reset[-1].startswith(b"shaded paused z1.00 c1.20 g1.00 L-55/35")
+    assert reset[-1].startswith(b"shaded paused z1.00 v6.00 c1.20 g1.00 L-55/35")
     assert b"hybrid/structural" in reset[-1]
     viewer.send(b"r")
     viewer.collect()
@@ -196,7 +196,7 @@ with Viewer("--font", FONT, "--font-size", "16", "--font-cell", "12x24", "--samp
     reset=viewer.last()
     assert reset[-1].startswith(b"shaded paused") and b"hybrid/structural" in reset[-1]
     viewer.resize(80, 24, 800, 600)
-    assert b"font:" in viewer.last()[-1]
+    assert b"v6.00" in viewer.last()[-1] and b"hybrid" in viewer.last()[-1]
     viewer.quit(b"\x1b")
 print("OK: font atlas, three palettes/algorithms, diagnostic bypass, pause/reset/resize and cleanup")
 
@@ -240,6 +240,14 @@ with tempfile.TemporaryDirectory(prefix="limen-hands-") as folder:
         assert all(c == 32 for row in outer_hands(diagnostic) for c in row), "hands leaked into diagnostics"
         viewer.send(b"1")
         assert outer_hands(viewer.last()) == base, "return from diagnostics changed hands"
+        viewer.send(b"h")
+        hidden = viewer.last()
+        assert all(c in STRUCTURAL for row in hidden for c in row), "status leaked into the composition"
+        assert any(c != 32 for row in outer_hands(hidden) for c in row), "hands disappeared in full-height mode"
+        viewer.send(b"H")
+        shown = viewer.last()
+        assert b"paused" in shown[-1] and b"v6.00" in shown[-1]
+        assert outer_hands(shown) == base, "status round-trip moved the static hands"
         viewer.send(b"+")
         enlarged = viewer.last()
         assert any(c != 32 for row in outer_hands(enlarged) for c in row)
@@ -250,3 +258,61 @@ with tempfile.TemporaryDirectory(prefix="limen-hands-") as folder:
         assert viewer.last()[0] == b"s", "one-cell terminal failed"
         viewer.quit(b"q")
 print("OK: split PNG hands, alpha, static edges during rotation/light/tone, geometric overlay, diagnostic isolation, zoom/resize and cleanup")
+
+with Viewer("--rotation-speed", "90", "--stability", "0") as viewer:
+    moving = viewer.frames(0.35)
+    assert len(set(frame[:-1] for frame in moving)) > 1
+    viewer.send(b" ")
+    viewer.collect()
+    paused = viewer.last()
+    assert b"paused" in paused[-1] and b"v90.00" in paused[-1]
+    viewer.send(b"<")
+    slower = viewer.last()
+    assert b"v89.50" in slower[-1] and slower[:-1] == paused[:-1]
+    viewer.send(b">")
+    assert b"v90.00" in viewer.last()[-1]
+    viewer.send(b"h")
+    hidden = viewer.last()
+    assert all(c in STRUCTURAL for row in hidden for c in row), "status text remained on the scene"
+    viewer.send(b"H")
+    restored = viewer.last()
+    assert b"paused" in restored[-1] and b"v90.00" in restored[-1]
+    assert restored[:-1] == paused[:-1], "hiding status changed the paused angle"
+    viewer.resize(80, 1, 800, 20)
+    assert viewer.last()[0].startswith(b"shaded paused")
+    viewer.send(b"h")
+    assert all(c in STRUCTURAL for c in viewer.last()[0])
+    viewer.send(b"h")
+    assert viewer.last()[0].startswith(b"shaded paused")
+    viewer.send(b"h")
+    viewer.collect()
+    viewer.resize(80, 24, 800, 600)
+    assert all(c in STRUCTURAL for row in viewer.last() for c in row)
+    viewer.send(b"H")
+    assert b"v90.00" in viewer.last()[-1]
+    viewer.quit(b"q")
+print("OK: rotation speed hotkeys, pause/angle preservation, H status round-trip, full-height drawing, one-row window and hidden resize")
+
+with Viewer("--rotation-speed", "0", "--hide-status", "--stability", "0") as viewer:
+    frozen = viewer.frames(0.3)
+    assert len(set(frozen)) == 1 and all(c in STRUCTURAL for row in frozen[-1] for c in row)
+    viewer.send(b"h")
+    assert b"v0.00" in viewer.last()[-1]
+    viewer.send(b">" * 60)
+    assert b"v30.00" in viewer.last()[-1]
+    moving = viewer.frames(0.35)
+    assert len(set(frame[:-1] for frame in moving)) > 1, "nonzero speed did not resume rotation"
+    viewer.send(b"<" * 60)
+    viewer.collect()
+    stopped = viewer.frames()
+    assert b"v0.00" in stopped[-1][-1] and len(set(stopped)) == 1
+    viewer.send(b" ")
+    viewer.collect()
+    viewer.send(b">0")
+    reset = viewer.last()
+    assert all(c in STRUCTURAL for row in reset for c in row), "0 did not restore --hide-status"
+    viewer.send(b"H")
+    reset_visible = viewer.last()
+    assert b"paused" in reset_visible[-1] and b"v0.00" in reset_visible[-1], "0 did not restore CLI speed or preserve pause"
+    viewer.quit(b"\x1b")
+print("OK: zero/fractional speed controls, restart from zero, CLI hidden status, reset restores CLI speed/visibility and preserves pause")

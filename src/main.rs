@@ -53,6 +53,12 @@ struct Args {
     /// Initial rotation about the Z axis, in degrees
     #[arg(long, default_value = "0", allow_hyphen_values = true, value_parser = parse_degrees)]
     rotate_z: f32,
+    /// Rotation speed in degrees per second, 0 to 360 (0 fixes the current angle)
+    #[arg(long, default_value = "6", value_parser = parse_rotation_speed)]
+    rotation_speed: f32,
+    /// Use the whole terminal for the scene; H toggles the status row
+    #[arg(long)]
+    hide_status: bool,
     /// Maximum frames per second
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u16).range(1..=240))]
     fps: u16,
@@ -131,6 +137,9 @@ fn parse_center_width(s: &str) -> Result<f32, String> {
 }
 fn parse_hands_gap(s: &str) -> Result<f32, String> {
     parse_bounded(s, 0.0, 10.0)
+}
+fn parse_rotation_speed(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.0, 360.0)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -228,6 +237,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         palette: args.palette,
         complexity_penalty: args.complexity_penalty,
         stability: args.stability,
+        rotation_speed: args.rotation_speed,
+        show_status: !args.hide_status,
         zoom: args.zoom,
         light_azimuth: args.light_azimuth,
         light_elevation: args.light_elevation,
@@ -260,7 +271,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         let dt = start.duration_since(previous).as_secs_f32();
         previous = start;
         if !paused {
-            angle = (angle + dt * 6.0_f32.to_radians()) % std::f32::consts::TAU;
+            angle = (angle + dt * settings.rotation_speed.to_radians()) % std::f32::consts::TAU;
         }
         scene.instances[0].transform.rotation = Quat::from_rotation_y(angle) * orientation;
         // Query pixels too: font changes can alter the cell ratio independently of columns.
@@ -279,7 +290,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             size.width,
             size.height,
         );
-        let (width, height) = (size.columns as usize, size.rows.saturating_sub(1) as usize);
+        let (width, height) = (
+            size.columns as usize,
+            size.rows.saturating_sub(u16::from(settings.show_status)) as usize,
+        );
         let viewport = Viewport::centered(
             width,
             height,
@@ -360,12 +374,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             overlay_model(&mut grid, &model_grid, &frame, viewport, sx, sy);
         }
-        if width > 0 && size.rows > 0 {
+        if width > 0 && size.rows > 0 && settings.show_status {
             let status = format!(
-                "{}{} z{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {}/{} {}{} | M P 1-6 +/- arrows ,. [] 0 Space R Q",
+                "{}{} z{:.2} v{:.2} c{:.2} g{:.2} L{:.0}/{:.0} A{:.3}({}) {}/{} {}{} | H <> M P 1-6 +/- arrows ,. [] 0 Space R Q",
                 settings.mode,
                 if paused { " paused" } else { "" },
                 settings.zoom,
+                settings.rotation_speed,
                 settings.tone.contrast,
                 settings.tone.gamma,
                 settings.light_azimuth,
@@ -382,6 +397,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 },
             );
             terminal_output.present_with_status(&grid, &status)?;
+        } else if width > 0 && size.rows > 0 {
+            terminal_output.present(&grid)?;
         }
         // Poll until the frame deadline, so input remains responsive while idle.
         let deadline = start + frame_time;
@@ -406,6 +423,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                         return Ok(());
                     }
                     KeyCode::Char(' ') if key.kind == KeyEventKind::Press => paused = !paused,
+                    KeyCode::Char('h' | 'H') if key.kind == KeyEventKind::Press => {
+                        settings.show_status = !settings.show_status;
+                    }
+                    KeyCode::Char('<') => settings.adjust(Adjustment::RotationSpeed(-0.5)),
+                    KeyCode::Char('>') => settings.adjust(Adjustment::RotationSpeed(0.5)),
                     KeyCode::Char('r' | 'R') => {
                         angle = 0.0;
                         resolver.reset_history();
