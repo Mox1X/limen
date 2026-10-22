@@ -64,6 +64,10 @@ pub struct CharGrid {
 }
 
 impl CharGrid {
+    pub fn copy_from(&mut self, other: &Self) {
+        assert_eq!((self.width, self.height), (other.width, other.height));
+        self.cells.copy_from_slice(&other.cells);
+    }
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             width,
@@ -158,6 +162,16 @@ struct HistoryKey {
     mode: ViewMode,
 }
 impl AsciiResolver {
+    /// Calibrated tonal lookup for static image layers; does not modify frame history.
+    pub fn tonal_char(&mut self, luminance: f32) -> u8 {
+        if self.atlas.is_none() {
+            return brightness_char(luminance);
+        }
+        let sets = self.candidates.get_or_insert_with(|| {
+            GlyphPalette::ALL.map(|p| Candidates::new(self.atlas.as_ref(), p))
+        });
+        sets[GlyphPalette::Tonal as usize].brightness(luminance.clamp(0.0, 1.0))
+    }
     pub fn with_atlas(atlas: GlyphAtlas) -> Self {
         Self {
             atlas: Some(atlas),

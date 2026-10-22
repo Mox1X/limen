@@ -1,4 +1,5 @@
 pub mod ascii;
+pub mod composition;
 pub mod font_atlas;
 pub mod geometry;
 pub mod glyphs;

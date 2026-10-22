@@ -6,6 +6,7 @@ use crossterm::{
 use glam::{EulerRot, Quat};
 use limen::{
     ascii::{AsciiResolver, CharGrid, GlyphMode, GlyphPalette, ToneMap},
+    composition::{Contacts, SplitBackdrop, Viewport, overlay_model},
     font_atlas::{CellSize, FontAtlasConfig, GlyphAtlas},
     geometry::{self, Camera, Scene},
     obj,
@@ -31,6 +32,18 @@ struct Args {
     /// Render only this named OBJ object/group; repeat to include several
     #[arg(long = "object", requires = "model", value_name = "NAME")]
     objects: Vec<String>,
+    /// PNG with a left and right hand on black/transparent background
+    #[arg(long, value_name = "PNG")]
+    hands: Option<PathBuf>,
+    /// Fraction of terminal width reserved for the 3D model (default 0.42 with --hands)
+    #[arg(long, requires = "hands", value_parser = parse_center_width)]
+    center_width: Option<f32>,
+    /// Fingertip distance from the initial silhouette in character columns (default 1)
+    #[arg(long, requires = "hands", value_parser = parse_hands_gap)]
+    hands_gap: Option<f32>,
+    /// Static hand luminance multiplier (default 0.65)
+    #[arg(long, requires = "hands", value_parser = parse_unit)]
+    hands_brightness: Option<f32>,
     /// Initial rotation about the X axis, in degrees
     #[arg(long, default_value = "0", allow_hyphen_values = true, value_parser = parse_degrees)]
     rotate_x: f32,
@@ -113,6 +126,21 @@ fn parse_bounded(s: &str, min: f32, max: f32) -> Result<f32, String> {
         Err(format!("expected a finite value between {min} and {max}"))
     }
 }
+fn parse_center_width(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.2, 0.8)
+}
+fn parse_hands_gap(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 0.0, 10.0)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct BackdropKey {
+    width: usize,
+    height: usize,
+    aspect: f32,
+    zoom: f32,
+}
+
 fn parse_unit(s: &str) -> Result<f32, String> {
     parse_bounded(s, 0.0, 1.0)
 }
@@ -160,6 +188,11 @@ fn run() -> Result<(), Box<dyn Error>> {
             .map_err(|e| format!("{}: {e}", path.display()))?,
         None => geometry::cube(),
     };
+    let backdrop = args
+        .hands
+        .as_deref()
+        .map(SplitBackdrop::from_file)
+        .transpose()?;
     let mut resolver = match args.font {
         Some(ref path) => AsciiResolver::with_atlas(GlyphAtlas::from_file(
             path,
@@ -207,6 +240,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut settings = initial_settings;
     let mut terminal_output = Terminal::enter()?;
     let mut grid = CharGrid::new(0, 0);
+    let mut model_grid = CharGrid::new(0, 0);
+    let mut background: Option<(BackdropKey, CharGrid)> = None;
     let mut frame = Framebuffer::new(0, 0);
     let sx = args.samples_x as usize;
     let sy = args.samples_y as usize;
@@ -245,6 +280,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             size.height,
         );
         let (width, height) = (size.columns as usize, size.rows.saturating_sub(1) as usize);
+        let viewport = Viewport::centered(
+            width,
+            height,
+            if backdrop.is_some() {
+                args.center_width.unwrap_or(0.42)
+            } else {
+                1.0
+            },
+        );
         if grid.width() != width || grid.height() != height {
             let samples = width
                 .checked_mul(sx)
@@ -256,12 +300,46 @@ fn run() -> Result<(), Box<dyn Error>> {
                 );
             }
             grid = CharGrid::new(width, height);
-            frame = Framebuffer::new(width * sx, height * sy);
+            model_grid = CharGrid::new(viewport.width, height);
+            frame = Framebuffer::new(viewport.width * sx, height * sy);
         }
         if width > 0 && height > 0 {
-            let aspect = width as f32 * cell_aspect.value / height as f32;
+            let aspect = viewport.width as f32 * cell_aspect.value / height as f32;
             let camera = Camera::fitted(bounds, aspect, settings.zoom);
             scene.light = settings.light();
+            let key = BackdropKey {
+                width,
+                height,
+                aspect: cell_aspect.value,
+                zoom: settings.zoom,
+            };
+            if let Some(image) = &backdrop
+                && background.as_ref().is_none_or(|(old, _)| *old != key)
+            {
+                scene.instances[0].transform.rotation = orientation;
+                render::render_with_options(
+                    &scene,
+                    &camera,
+                    aspect,
+                    &mut frame,
+                    RenderOptions {
+                        mode: ViewMode::Silhouette,
+                        capture_features: false,
+                    },
+                );
+                let contacts =
+                    Contacts::from_frame(&frame, viewport, sx, sy, args.hands_gap.unwrap_or(1.0));
+                let mut layer = CharGrid::new(width, height);
+                image.render(
+                    &mut layer,
+                    cell_aspect.value,
+                    contacts,
+                    args.hands_brightness.unwrap_or(0.65),
+                    &mut resolver,
+                );
+                background = Some((key, layer));
+                scene.instances[0].transform.rotation = Quat::from_rotation_y(angle) * orientation;
+            }
             render::render_with_options(
                 &scene,
                 &camera,
@@ -272,7 +350,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                     capture_features: settings.glyph_mode == GlyphMode::Hybrid,
                 },
             );
-            resolver.resolve(&frame, sx, sy, &mut grid, settings.ascii_options());
+            resolver.resolve(&frame, sx, sy, &mut model_grid, settings.ascii_options());
+            if settings.mode == ViewMode::Shaded
+                && let Some((_, layer)) = &background
+            {
+                grid.copy_from(layer);
+            } else {
+                grid.clear();
+            }
+            overlay_model(&mut grid, &model_grid, &frame, viewport, sx, sy);
         }
         if width > 0 && size.rows > 0 {
             let status = format!(

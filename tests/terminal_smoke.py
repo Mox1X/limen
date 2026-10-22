@@ -199,3 +199,54 @@ with Viewer("--font", FONT, "--font-size", "16", "--font-cell", "12x24", "--samp
     assert b"font:" in viewer.last()[-1]
     viewer.quit(b"\x1b")
 print("OK: font atlas, three palettes/algorithms, diagnostic bypass, pause/reset/resize and cleanup")
+
+# Synthetic RGBA image keeps the compositor checks independent of local artwork.
+import tempfile
+import zlib
+
+
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+
+def outer_hands(frame):
+    return tuple(row[:35] + row[85:] for row in frame[:-1])
+
+
+with tempfile.TemporaryDirectory(prefix="limen-hands-") as folder:
+    png_path = Path(folder) / "hands.png"
+    raw = bytearray()
+    for y in range(32):
+        raw.append(0)
+        for x in range(64):
+            visible = (x < 27 and 12 <= y < 26) or (x >= 36 and 8 <= y < 22)
+            raw.extend((200, 160, 120, 255) if visible else (255, 255, 255, 0))
+    png_path.write_bytes(b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 32, 8, 6, 0, 0, 0)) + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
+    with Viewer("--hands", str(png_path), "--font", FONT) as viewer:
+        first = viewer.frames(0.4)[-1]
+        base = outer_hands(first)
+        assert any(c != 32 for row in base for c in row), "no hands at the edges"
+        rotating = viewer.frames(0.35)
+        assert all(outer_hands(frame) == base for frame in rotating), "hands move with rotating model"
+        viewer.send(b" ")
+        viewer.collect()
+        paused = viewer.frames()
+        assert paused[0] == paused[-1], "composition changed while paused"
+        viewer.send(b"\x1b[D.]")
+        changed = viewer.last()
+        assert outer_hands(changed) == base, "model light/tone changed static hands"
+        viewer.send(b"2")
+        diagnostic = viewer.last()
+        assert all(c == 32 for row in outer_hands(diagnostic) for c in row), "hands leaked into diagnostics"
+        viewer.send(b"1")
+        assert outer_hands(viewer.last()) == base, "return from diagnostics changed hands"
+        viewer.send(b"+")
+        enlarged = viewer.last()
+        assert any(c != 32 for row in outer_hands(enlarged) for c in row)
+        viewer.resize(80, 24, 800, 600)
+        resized = viewer.last()
+        assert any(row.strip() for row in resized[:-1]), "empty resized composition"
+        viewer.resize(1, 1, 10, 20)
+        assert viewer.last()[0] == b"s", "one-cell terminal failed"
+        viewer.quit(b"q")
+print("OK: split PNG hands, alpha, static edges during rotation/light/tone, geometric overlay, diagnostic isolation, zoom/resize and cleanup")

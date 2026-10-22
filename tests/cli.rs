@@ -244,3 +244,34 @@ fn palettes_and_selection_controls_validate_before_terminal_setup() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
     }
 }
+
+#[test]
+fn hand_composition_options_validate_before_terminal_setup() {
+    for args in [
+        vec!["--center-width", "0.42"],
+        vec!["--hands-gap", "1"],
+        vec!["--hands-brightness", "0.65"],
+        vec!["--hands", "missing.png", "--center-width", "NaN"],
+        vec!["--hands", "missing.png", "--center-width", "0.1"],
+        vec!["--hands", "missing.png", "--hands-gap", "11"],
+        vec!["--hands", "missing.png", "--hands-gap", "NaN"],
+        vec!["--hands", "missing.png", "--hands-brightness", "1.1"],
+    ] {
+        let output = binary().args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(!output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b));
+    }
+    let output = binary()
+        .args(["--hands", "/missing/creation.png"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("/missing/creation.png"));
+    assert!(!output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b));
+    let output = binary()
+        .arg("--hands")
+        .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("interactive terminal required"));
+}
