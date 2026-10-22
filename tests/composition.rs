@@ -194,3 +194,35 @@ fn static_tonal_lookup_preserves_model_history() {
     r.resolve(&frame, 2, 4, &mut grid, options);
     assert_eq!(grid.get(0, 0), Some(b'='));
 }
+
+#[test]
+fn stronger_hand_tone_separates_shadows_from_highlights_and_keeps_background_black() {
+    use limen::composition::BackdropStyle;
+    let image = SplitBackdrop::from_png(&hands()).unwrap();
+    let mut resolver = AsciiResolver::default();
+    let contacts = Contacts {
+        left: 6.0,
+        right: 14.0,
+        y: 5.0,
+    };
+    let mut linear = CharGrid::new(20, 10);
+    let mut expressive = CharGrid::new(20, 10);
+    let style = BackdropStyle::default();
+    image.render(&mut linear, 0.5, contacts, style.brightness, &mut resolver);
+    image.render_with_style(&mut expressive, 0.5, contacts, style, &mut resolver);
+    let level = |grid: &CharGrid, x| {
+        RAMP.iter()
+            .position(|&c| Some(c) == grid.get(x, 5))
+            .unwrap()
+    };
+    assert!(level(&expressive, 2) < level(&linear, 2));
+    assert!(level(&expressive, 17) > level(&linear, 17));
+    assert!(
+        level(&expressive, 17) - level(&expressive, 2) > level(&linear, 17) - level(&linear, 2)
+    );
+    assert!(
+        expressive
+            .rows()
+            .all(|row| row[6..14].iter().all(|&c| c == b' '))
+    );
+}

@@ -6,7 +6,9 @@ use crossterm::{
 use glam::{EulerRot, Quat};
 use limen::{
     ascii::{AsciiResolver, CharGrid, GlyphMode, GlyphPalette, ToneMap},
-    composition::{Contacts, SplitBackdrop, Viewport, overlay_model},
+    composition::{
+        BackdropStyle, Contacts, DEFAULT_CENTER_WIDTH, SplitBackdrop, Viewport, overlay_model,
+    },
     font_atlas::{CellSize, FontAtlasConfig, GlyphAtlas},
     geometry::{self, Camera, Scene},
     obj,
@@ -35,15 +37,21 @@ struct Args {
     /// PNG with a left and right hand on black/transparent background
     #[arg(long, value_name = "PNG")]
     hands: Option<PathBuf>,
-    /// Fraction of terminal width reserved for the 3D model (default 0.42 with --hands)
+    /// Fraction of terminal width reserved for the 3D model (default 0.36 with --hands)
     #[arg(long, requires = "hands", value_parser = parse_center_width)]
     center_width: Option<f32>,
     /// Fingertip distance from the initial silhouette in character columns (default 1)
     #[arg(long, requires = "hands", value_parser = parse_hands_gap)]
     hands_gap: Option<f32>,
-    /// Static hand luminance multiplier (default 0.65)
+    /// Static hand luminance multiplier (default 0.85)
     #[arg(long, requires = "hands", value_parser = parse_unit)]
     hands_brightness: Option<f32>,
+    /// Static hand contrast, 1 to 3 (default 1.5)
+    #[arg(long, requires = "hands", value_parser = parse_hands_contrast)]
+    hands_contrast: Option<f32>,
+    /// Static hand luminance exponent, 0.25 to 4 (default 1.1)
+    #[arg(long, requires = "hands", value_parser = parse_gamma)]
+    hands_gamma: Option<f32>,
     /// Initial rotation about the X axis, in degrees
     #[arg(long, default_value = "0", allow_hyphen_values = true, value_parser = parse_degrees)]
     rotate_x: f32,
@@ -138,6 +146,9 @@ fn parse_center_width(s: &str) -> Result<f32, String> {
 fn parse_hands_gap(s: &str) -> Result<f32, String> {
     parse_bounded(s, 0.0, 10.0)
 }
+fn parse_hands_contrast(s: &str) -> Result<f32, String> {
+    parse_bounded(s, 1.0, 3.0)
+}
 fn parse_rotation_speed(s: &str) -> Result<f32, String> {
     parse_bounded(s, 0.0, 360.0)
 }
@@ -202,6 +213,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         .as_deref()
         .map(SplitBackdrop::from_file)
         .transpose()?;
+    let defaults = BackdropStyle::default();
+    let backdrop_style = BackdropStyle {
+        brightness: args.hands_brightness.unwrap_or(defaults.brightness),
+        tone: ToneMap {
+            contrast: args.hands_contrast.unwrap_or(defaults.tone.contrast),
+            gamma: args.hands_gamma.unwrap_or(defaults.tone.gamma),
+        },
+    };
     let mut resolver = match args.font {
         Some(ref path) => AsciiResolver::with_atlas(GlyphAtlas::from_file(
             path,
@@ -298,7 +317,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             width,
             height,
             if backdrop.is_some() {
-                args.center_width.unwrap_or(0.42)
+                args.center_width.unwrap_or(DEFAULT_CENTER_WIDTH)
             } else {
                 1.0
             },
@@ -344,11 +363,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let contacts =
                     Contacts::from_frame(&frame, viewport, sx, sy, args.hands_gap.unwrap_or(1.0));
                 let mut layer = CharGrid::new(width, height);
-                image.render(
+                image.render_with_style(
                     &mut layer,
                     cell_aspect.value,
                     contacts,
-                    args.hands_brightness.unwrap_or(0.65),
+                    backdrop_style,
                     &mut resolver,
                 );
                 background = Some((key, layer));

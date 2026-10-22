@@ -251,15 +251,43 @@ fn hand_composition_options_validate_before_terminal_setup() {
         vec!["--center-width", "0.42"],
         vec!["--hands-gap", "1"],
         vec!["--hands-brightness", "0.65"],
+        vec!["--hands-contrast", "1.5"],
+        vec!["--hands-gamma", "1.1"],
         vec!["--hands", "missing.png", "--center-width", "NaN"],
         vec!["--hands", "missing.png", "--center-width", "0.1"],
         vec!["--hands", "missing.png", "--hands-gap", "11"],
         vec!["--hands", "missing.png", "--hands-gap", "NaN"],
         vec!["--hands", "missing.png", "--hands-brightness", "1.1"],
+        vec!["--hands", "missing.png", "--hands-contrast", "0.5"],
+        vec!["--hands", "missing.png", "--hands-contrast", "NaN"],
+        vec!["--hands", "missing.png", "--hands-gamma", "0"],
+        vec!["--hands", "missing.png", "--hands-gamma", "inf"],
     ] {
         let output = binary().args(args).output().unwrap();
         assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).starts_with("error:"),
+            "invalid options reached asset loading"
+        );
         assert!(!output.stdout.contains(&0x1b) && !output.stderr.contains(&0x1b));
+    }
+    for (flag, value) in [
+        ("--hands-contrast", "1"),
+        ("--hands-contrast", "1.5"),
+        ("--hands-contrast", "3"),
+        ("--hands-gamma", "0.25"),
+        ("--hands-gamma", "1.1"),
+        ("--hands-gamma", "4"),
+    ] {
+        let output = binary()
+            .args(["--hands", "/missing/creation.png", flag, value])
+            .output()
+            .unwrap();
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.starts_with("limen:") && error.contains("/missing/creation.png"),
+            "valid options were rejected: {error}"
+        );
     }
     let output = binary()
         .args(["--hands", "/missing/creation.png"])

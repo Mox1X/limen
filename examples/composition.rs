@@ -2,8 +2,10 @@
 use clap::Parser;
 use glam::Quat;
 use limen::{
-    ascii::{AsciiOptions, AsciiResolver, CharGrid},
-    composition::{Contacts, SplitBackdrop, Viewport, overlay_model},
+    ascii::{AsciiOptions, AsciiResolver, CharGrid, ToneMap},
+    composition::{
+        BackdropStyle, Contacts, DEFAULT_CENTER_WIDTH, SplitBackdrop, Viewport, overlay_model,
+    },
     font_atlas::{FontAtlasConfig, GlyphAtlas},
     geometry::{self, Camera, Scene},
     obj,
@@ -28,12 +30,16 @@ struct Args {
     rows: u16,
     #[arg(long, default_value_t = 0.5)]
     cell_aspect: f32,
-    #[arg(long, default_value_t = 0.42)]
+    #[arg(long, default_value_t = DEFAULT_CENTER_WIDTH)]
     center_width: f32,
     #[arg(long, default_value_t = 1.0)]
     hands_gap: f32,
-    #[arg(long, default_value_t = 0.65)]
+    #[arg(long, default_value_t = 0.85)]
     hands_brightness: f32,
+    #[arg(long, default_value_t = 1.5)]
+    hands_contrast: f32,
+    #[arg(long, default_value_t = 1.1)]
+    hands_gamma: f32,
     #[arg(long)]
     font: Option<PathBuf>,
     #[arg(long)]
@@ -48,6 +54,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         || !(0.2..=0.8).contains(&args.center_width)
         || !(0.0..=10.0).contains(&args.hands_gap)
         || !(0.0..=1.0).contains(&args.hands_brightness)
+        || !(1.0..=3.0).contains(&args.hands_contrast)
+        || !(0.25..=4.0).contains(&args.hands_gamma)
     {
         return Err("invalid composition parameters".into());
     }
@@ -82,11 +90,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let contacts = Contacts::from_frame(&frame, viewport, 2, 4, args.hands_gap);
     let mut output = CharGrid::new(w, h);
-    backdrop.render(
+    backdrop.render_with_style(
         &mut output,
         args.cell_aspect,
         contacts,
-        args.hands_brightness,
+        BackdropStyle {
+            brightness: args.hands_brightness,
+            tone: ToneMap {
+                contrast: args.hands_contrast,
+                gamma: args.hands_gamma,
+            },
+        },
         &mut resolver,
     );
     scene.instances[0].transform.rotation =

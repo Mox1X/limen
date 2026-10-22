@@ -1,6 +1,6 @@
 //! Static split-image backdrops and terminal-space composition, independent of OBJ loading.
 use crate::{
-    ascii::{AsciiResolver, CharGrid},
+    ascii::{AsciiResolver, CharGrid, ToneMap},
     render::Framebuffer,
 };
 use std::{
@@ -11,6 +11,26 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+pub const DEFAULT_CENTER_WIDTH: f32 = 0.36;
+
+/// Static image tone is independent of the model's lighting and exposure.
+#[derive(Debug, Clone, Copy)]
+pub struct BackdropStyle {
+    pub brightness: f32,
+    pub tone: ToneMap,
+}
+impl Default for BackdropStyle {
+    fn default() -> Self {
+        Self {
+            brightness: 0.85,
+            tone: ToneMap {
+                contrast: 1.5,
+                gamma: 1.1,
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
@@ -232,8 +252,29 @@ impl SplitBackdrop {
         brightness: f32,
         resolver: &mut AsciiResolver,
     ) {
+        self.render_with_style(
+            grid,
+            cell_aspect,
+            contacts,
+            BackdropStyle {
+                brightness,
+                tone: ToneMap::LINEAR,
+            },
+            resolver,
+        );
+    }
+    pub fn render_with_style(
+        &self,
+        grid: &mut CharGrid,
+        cell_aspect: f32,
+        contacts: Contacts,
+        style: BackdropStyle,
+        resolver: &mut AsciiResolver,
+    ) {
         assert!(cell_aspect.is_finite() && cell_aspect > 0.0);
-        assert!(brightness.is_finite() && (0.0..=1.0).contains(&brightness));
+        assert!(style.brightness.is_finite() && (0.0..=1.0).contains(&style.brightness));
+        assert!((1.0..=3.0).contains(&style.tone.contrast));
+        assert!((0.25..=4.0).contains(&style.tone.gamma));
         grid.clear();
         if grid.width() == 0 || grid.height() == 0 {
             return;
@@ -273,7 +314,8 @@ impl SplitBackdrop {
                         value += sample;
                     }
                 }
-                grid.set(x, y, resolver.tonal_char(value / 8.0 * brightness));
+                let luminance = style.tone.apply(value / 8.0) * style.brightness;
+                grid.set(x, y, resolver.tonal_char(luminance));
             }
         }
     }
